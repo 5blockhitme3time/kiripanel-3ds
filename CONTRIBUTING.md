@@ -23,7 +23,7 @@ docker run --rm -v "$PWD":/moonlight-N3DS -w /moonlight-N3DS moonlight-n3ds make
 
 ```bash
 python -m unittest discover -s pc/tests          # PC 端 55 项
-wsl bash console/panel_preview/build.sh          # 面板 96 项（ASan）+ 预览图
+wsl bash console/panel_preview/build.sh          # 面板约 95 项（ASan）+ 预览图
 python plugin/native/proxytest.py plugin/native/out/x64/version.dll
 python dev/regress.py --list                     # 真游戏回归的场景
 ```

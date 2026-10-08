@@ -129,7 +129,7 @@ make -j$(nproc)                    # make DIAG=1 会额外在 SD 卡上写每秒
 **面板本体**（在 PC 上原生编译，不用 3DS 工具链）
 
 ```bash
-wsl bash console/panel_preview/build.sh    # 96 项测试（ASan）+ docs/images 那张预览图
+wsl bash console/panel_preview/build.sh    # 约 95 项测试（ASan）+ docs/images 那张预览图（数量随宿主机有哪些字体/PE 文件略变）
 ```
 
 ## 测试
@@ -139,7 +139,7 @@ wsl bash console/panel_preview/build.sh    # 96 项测试（ASan）+ docs/images
 | PC 单元测试（55 项） | `python -m unittest discover -s pc/tests` |
 | 真游戏回归：5 个场景走面板命令 | `python dev/regress.py` |
 | 通用 KAG3 适配器（4 个场景） | `python dev/regress.py kag3_story kag3_title kag3_screens kag3_dialog` |
-| 面板（96 项，ASan） | `wsl bash console/panel_preview/build.sh` |
+| 面板（约 95 项，ASan） | `wsl bash console/panel_preview/build.sh` |
 | 命令行兼容性检测 | `python dev/compatrun.py GAME_DIR` |
 | 给新游戏写适配器 | `python dev/probe.py start GAME_DIR`，然后用 `eval` / `shot` / `src` 探索 |
 
@@ -150,7 +150,7 @@ wsl bash console/panel_preview/build.sh    # 96 项测试（ASan）+ docs/images
 会先把 `savedata` 按字节备份、结束后原样恢复。
 
 CI（GitHub Actions）每次提交会跑：Windows 上编插件 + PC 单元测试、Linux 上编面板
-（ASan）跑 96 项测试、Docker 里编 3DS 端。打 `v*` tag 会自动发 Release，附件里是
+（ASan）跑约 95 项测试、Docker 里编 3DS 端。打 `v*` tag 会自动发 Release，附件里是
 `KiriPanel-<版本>.zip`（玩家下载包）和 3DS 端的 `.3dsx` / `.cia`。
 
 ## 写一个新适配器
