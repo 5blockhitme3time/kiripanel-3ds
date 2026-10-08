@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KiriPanel</title>
+<link rel="icon" href="/icon.png">
+<style>
+:root{
+  --bg:#0f1216; --panel:#161b21; --raise:#1d232b; --line:#262e38; --line2:#323c48;
+  --text:#e6e9ee; --dim:#9aa4b1; --faint:#6c7682;
+  --accent:#5aa9ff; --accent2:#2f7fd6;
+  --ok:#4cc38a; --warn:#f0b54d; --bad:#ef6b6b; --info:#8b9cff;
+  --r:10px;
+  font:14px/1.55 "Microsoft YaHei UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text)}
+button{font:inherit;color:inherit;cursor:pointer;border:1px solid var(--line2);background:var(--raise);
+  border-radius:8px;padding:6px 14px;transition:background .12s,border-color .12s}
+button:hover:not(:disabled){background:#252d37;border-color:#3e4a58}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button:disabled{opacity:.4;cursor:default}
+button.primary{background:var(--accent2);border-color:var(--accent2);color:#fff}
+button.primary:hover:not(:disabled){background:#3a8de6;border-color:#3a8de6}
+button.danger{color:#ffb3b3}
+button.ghost{background:transparent;border-color:transparent;color:var(--dim)}
+button.ghost:hover:not(:disabled){background:var(--raise);color:var(--text)}
+select,input{font:inherit;color:inherit;background:var(--raise);border:1px solid var(--line2);border-radius:8px;padding:5px 8px}
+.app{display:grid;grid-template-rows:auto 1fr;height:100%}
+header{display:flex;align-items:center;gap:14px;padding:10px 18px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.3px}
+header h1 small{color:var(--faint);font-weight:400;margin-left:6px;font-size:12px}
+.pills{display:flex;gap:8px;flex:1;flex-wrap:wrap}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;background:var(--raise);
+  border:1px solid var(--line);font-size:12.5px;color:var(--dim)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:none}
+.dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--bad)}
+.body{display:grid;grid-template-columns:320px 1fr;min-height:0}
+aside{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--panel)}
+.aside-head{padding:14px 14px 10px;display:flex;flex-direction:column;gap:8px}
+.list{overflow:auto;padding:4px 8px 12px;flex:1}
+.game{display:block;width:100%;text-align:left;border:1px solid transparent;background:transparent;border-radius:var(--r);
+  padding:9px 10px;margin:2px 0}
+.game:hover:not(:disabled){background:var(--raise);border-color:var(--line)}
+.game.sel{background:#1c2a3a;border-color:#2d4a6a}
+.game .n{font-weight:600;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.game .m{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap}
+.tag{font-size:11.5px;padding:1px 7px;border-radius:5px;background:#232a33;color:var(--dim);border:1px solid var(--line)}
+.tag.ok{color:#9ff0c6;background:#173326;border-color:#1f4a35}
+.tag.warn{color:#ffd99a;background:#3a2d14;border-color:#57431c}
+.tag.bad{color:#ffc0c0;background:#3a1b1b;border-color:#5a2626}
+.tag.info{color:#c5ccff;background:#1f2343;border-color:#2e3466}
+.tag.live{color:#fff;background:var(--accent2);border-color:var(--accent2)}
+main{overflow:auto;padding:22px 28px 40px;min-width:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:16px}
+.card h2{font-size:15px;margin:0 0 10px;font-weight:600}
+.card h3{font-size:13px;margin:14px 0 6px;color:var(--dim);font-weight:500}
+.title{display:flex;align-items:flex-start;gap:12px;margin-bottom:16px}
+.title h2{font-size:20px;margin:0;font-weight:600;word-break:break-all}
+.title .path{color:var(--faint);font-size:12.5px;word-break:break-all;margin-top:2px}
+.actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.kv{display:grid;grid-template-columns:110px 1fr;gap:6px 12px;font-size:13px}
+.kv div:nth-child(odd){color:var(--dim)}
+.steps{margin:8px 0 0;padding:0;list-style:none;font-size:13px}
+.steps li{padding:3px 0 3px 18px;position:relative;color:var(--dim)}
+.steps li:before{content:"";position:absolute;left:4px;top:11px;width:6px;height:6px;border-radius:50%;background:var(--line2)}
+.steps li:last-child{color:var(--text)}
+.steps li:last-child:before{background:var(--accent)}
+.result{border-radius:10px;padding:12px 14px;margin-top:12px;border:1px solid}
+.result.ready{background:#132a20;border-color:#1f4a35}
+.result.basic{background:#1b2140;border-color:#2e3466}
+.result.adapter,.result.launcher{background:#33280f;border-color:#57431c}
+.result.no{background:#331a1a;border-color:#5a2626}
+.result b{display:block;font-size:15px;margin-bottom:4px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.alert{background:#3a2d14;border:1px solid #57431c;border-radius:10px;padding:10px 12px;margin-top:10px;font-size:13px;white-space:pre-wrap}
+.empty{color:var(--dim);text-align:center;padding:40px 10px}
+.lines{font-size:13.5px;max-height:220px;overflow:auto}
+.lines div{padding:4px 0;border-bottom:1px solid var(--line)}
+.lines .nm{display:inline-block;background:#3a2f1e;color:#ffc65c;border-radius:4px;padding:0 7px;font-size:12px;margin-right:6px}
+.lines .cur{color:var(--text)} .lines .old{color:var(--dim)}
+.addr{font:600 18px/1.3 Consolas,"Cascadia Mono",monospace;letter-spacing:.5px}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:8px;overflow:hidden}
+.seg button{border:0;border-radius:0;background:transparent;padding:5px 12px}
+.seg button.on{background:var(--accent2);color:#fff}
+.howto{margin:0;padding-left:20px;color:var(--dim)} .howto li{margin:4px 0}
+.howto b{color:var(--text);font-weight:600}
+.log{font:12px/1.5 Consolas,"Cascadia Mono",monospace;color:var(--dim);background:#11151a;border:1px solid var(--line);
+  border-radius:8px;padding:8px 10px;margin-top:10px;max-height:160px;overflow:auto;white-space:pre-wrap}
+.toast{position:fixed;right:18px;bottom:18px;background:#2a1f1f;border:1px solid #5a2626;color:#ffd0d0;border-radius:10px;
+  padding:10px 14px;max-width:420px;box-shadow:0 6px 24px #0008;display:none}
+.toast.show{display:block}
+.toast.good{background:#16291f;border-color:#1f4a35;color:#c5f5dc}
+.muted{color:var(--faint);font-size:12.5px}
+@media (max-width:900px){.body{grid-template-columns:1fr}aside{max-height:40vh;border-right:0;border-bottom:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>KiriPanel<small id="ver"></small></h1>
+    <div class="pills" id="pills" aria-live="polite"></div>
+    <button class="ghost" id="quit" title="关闭管理器（3DS 中继也会停止）">退出</button>
+  </header>
+  <div class="body">
+    <aside aria-label="游戏列表">
+      <div class="aside-head">
+        <button class="primary" id="add" title="选一个游戏的文件夹，或放游戏的总文件夹（会自动找出里面所有吉里吉里游戏）">＋ 添加游戏</button>
+        <input id="filter" placeholder="筛选…" aria-label="筛选游戏">
+      </div>
+      <div class="list" id="list" role="list"></div>
+    </aside>
+    <main id="main" tabindex="-1"></main>
+  </div>
+</div>
+<div class="toast" id="toast" role="status"></div>
+<script>
+"use strict";
+const TOKEN = "__TOKEN__";
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let S = null, selected = null, filterText = "", lastHtml = "";
+
+async function api(path, body){
+  const opt = body === undefined ? {headers:{"X-Token":TOKEN}}
+    : {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"}, body:JSON.stringify(body)};
+  const r = await fetch(path, opt);
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+let toastTimer;
+function toast(msg, good){
+  const t = $("toast"); t.textContent = msg; t.className = "toast show" + (good ? " good" : "");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.className = "toast", 4500);
+}
+async function act(path, body, okMsg){
+  try{
+    const r = await api(path, body);
+    if (r.error) toast(r.error); else if (okMsg) toast(okMsg, true);
+    await refresh(); return r;
+  }catch(e){ toast("管理器没有响应：" + e.message); }
+}
+
+const TIERS = {
+  ready:   ["完整支持", "ok"],   basic:   ["基本支持", "info"],
+  adapter: ["需要适配器", "warn"], launcher:["需经启动器", "warn"], no:["不支持", "bad"],
+};
+const INSTALL = {
+  none: ["未安装", ""], installed: ["已安装", "ok"], outdated: ["需要更新", "warn"], blocked: ["无法安装", "bad"],
+};
+const LOC = {play:"正文", title:"标题画面", menu:"游戏菜单", dialog:"电脑上有确认框", off:"未连接", hookold:"插件版本不匹配"};
+
+function tierTag(c){ if (!c) return '<span class="tag">未检测</span>';
+  const t = TIERS[c.tier] || [c.tier, ""]; return '<span class="tag '+t[1]+'">'+t[0]+'</span>'; }
+function installTag(i){ const t = INSTALL[i.state] || [i.state, ""]; return '<span class="tag '+t[1]+'">'+t[0]+'</span>'; }
+function isLive(g){ return S && S.live && S.live.game && S.live.game.path && g.path.toLowerCase() == S.live.game.path.toLowerCase(); }
+
+function renderPills(){
+  const r = S.relay, live = S.live;
+  const p = [];
+  p.push(r.error ? '<span class="pill"><span class="dot bad"></span>中继未启动</span>'
+                 : '<span class="pill"><span class="dot ok"></span>中继运行中 · 端口 '+r.port+'</span>');
+  p.push(r.console ? '<span class="pill"><span class="dot ok"></span>3DS 已连接</span>'
+                   : '<span class="pill"><span class="dot"></span>3DS 未连接</span>');
+  if (live) p.push('<span class="pill"><span class="dot ok"></span>'+esc(live.game ? live.game.name : "游戏")+' · '
+                   +esc(LOC[live.snap.loc] || live.snap.label || live.snap.loc)+'</span>');
+  else p.push('<span class="pill"><span class="dot"></span>没有游戏在运行</span>');
+  $("pills").innerHTML = p.join("");
+}
+
+function renderList(){
+  const f = filterText.toLowerCase();
+  const items = S.games.filter(g => !f || g.name.toLowerCase().includes(f) || g.path.toLowerCase().includes(f));
+  if (!S.games.length){
+    $("list").innerHTML = '<div class="empty">还没有游戏。<br>点「添加游戏」选择游戏文件夹，<br>或放游戏的总文件夹。</div>';
+    return;
+  }
+  $("list").innerHTML = items.map(g =>
+    '<button class="game'+(selected && selected.toLowerCase()==g.path.toLowerCase() ? " sel" : "")+'" role="listitem" data-path="'+esc(g.path)+'">'
+    +'<span class="n">'+esc(g.name)+'</span><span class="m">'
+    +(isLive(g) ? '<span class="tag live">运行中</span>' : '')
+    +(S.check && S.check.status == "running" && S.check.path.toLowerCase() == g.path.toLowerCase()
+      ? '<span class="tag info">检测中…</span>' : installTag(g.install))+tierTag(g.check)
+    +(g.install.exists === false ? '<span class="tag bad">文件夹不见了</span>' : '')
+    +'</span></button>').join("") || '<div class="empty">没有匹配的游戏</div>';
+  document.querySelectorAll(".game").forEach(b => b.onclick = () => { selected = b.dataset.path; render(true); });
+}
+function consoleCard(){
+  const r = S.relay;
+  const tb = r.textbox;
+  const seg = [["auto","3DS 显示台词时隐藏"],["never","不隐藏"],["always","总是隐藏"]]
+    .map(([k,t]) => '<button data-tb="'+k+'" class="'+(tb==k?"on":"")+'">'+t+'</button>').join("");
+  return '<div class="card"><h2>3DS 连接</h2>'
+    + (r.error ? '<div class="alert">'+esc(r.error)+'</div>' : '')
+    + '<div class="kv">'
+    + '<div>状态</div><div>'+(r.console ? '<span class="tag ok">3DS 正在读取台词</span>' : '<span class="tag">3DS 未连接</span>')+'</div>'
+    + '<div>电脑地址</div><div>'+(r.addresses.length ? r.addresses.map(a => '<span class="addr">'+esc(a)+'</span>').join("　") : "未找到局域网地址")+'</div>'
+    + '<div>端口</div><div>'+r.port+'<span class="muted">（3DS 端 moonlight.conf 里的 relay_port，默认就是 8787）</span></div>'
+    + '<div>电脑上的对话框</div><div><span class="seg" role="group" aria-label="隐藏电脑上的对话框">'+seg+'</span></div>'
+    + '</div><p class="muted" style="margin:10px 0 0">3DS 连接的是 Moonlight 串流的同一台电脑，不需要另外填地址。'
+    + '电脑防火墙第一次弹窗时请允许「专用网络」。</p></div>';
+}
+
+function liveCard(){
+  const L = S.live; if (!L) return "";
+  const s = L.snap, g = L.game || {};
+  const hist = (s.history || []).filter(h => h.kind == "L").slice(-4);
+  const lines = hist.map(h => '<div class="old">'+(h.name ? '<span class="nm">'+esc(h.name)+'</span>' : '')+esc(h.text)+'</div>').join("")
+    + (s.cur ? '<div class="cur">'+(s.cur[0] ? '<span class="nm">'+esc(s.cur[0])+'</span>' : '')+esc(s.cur[1])+'</div>' : '');
+  const opts = (s.opts || []).map(o => '<span class="tag info">'+esc(o.text)+'</span>').join("");
+  return '<div class="card"><h2>正在运行：'+esc(g.name || "游戏")+'</h2><div class="kv">'
+    + '<div>位置</div><div>'+esc(LOC[s.loc] || s.label || s.loc)+(s.auto ? ' · 自动' : '')+(s.skip ? ' · 快进' : '')+'</div>'
+    + '<div>适配器</div><div>'+esc(s.adapter || "-")+(s.degraded ? ' <span class="tag bad">'+esc(s.degraded)+' 出错已停用</span>' : '')
+    + '　<span class="muted">加载方式 '+esc(s.loader || "-")+'</span></div>'
+    + (s.hook_err ? '<div>最近的错误</div><div class="muted">'+esc(s.hook_err)+'</div>' : '')
+    + '</div>'
+    + (lines ? '<h3>台词</h3><div class="lines">'+lines+'</div>' : '')
+    + (opts ? '<h3>选项</h3><div class="chips">'+opts+'</div>' : '')
+    + '<div class="actions" style="margin-top:12px"><button id="report" title="把游戏的内部结构写成文本，用来给新游戏写适配器">导出诊断报告</button>'
+    + (g.unlisted ? '<button id="addlive">把这个游戏加入列表</button>' : '') + '</div></div>';
+}
+
+function welcome(){
+  if (S.live) return liveCard() + consoleCard();
+  return '<div class="card"><h2>开始使用</h2><ol class="howto">'
+    + '<li><b>添加游戏</b>：选择游戏所在的文件夹（有 .exe 的那一层）；选放游戏的总文件夹会自动找出里面所有吉里吉里游戏。</li>'
+    + '<li><b>检测兼容性</b>（可选）：自动用空的临时存档启动一次游戏，看插件能不能用，结束后恢复原样。</li>'
+    + '<li><b>安装</b>：一键把插件放进游戏目录（只加文件，不改游戏自己的任何文件，随时可以卸载）。</li>'
+    + '<li><b>正常启动游戏</b>，3DS 上打开 Moonlight 串流，下屏就会显示台词。玩的时候保持这个窗口开着。</li>'
+    + '</ol></div>' + consoleCard();
+}
+
+function checkCard(g){
+  const C = S.check && S.check.path.toLowerCase() == g.path.toLowerCase() ? S.check : null;
+  const r = C && C.result ? C.result : (C ? null : g.check);
+  let h = '<div class="card"><h2>兼容性</h2>';
+  if (C && C.status == "running"){
+    h += '<p class="muted" style="margin:0">正在用空的临时存档启动游戏检测，大约一分钟。检测期间请不要操作游戏窗口。</p>'
+      + '<ul class="steps">'+C.steps.map(s => '<li>'+esc(s)+'</li>').join("")+'</ul>'
+      + (C.dialog ? '<div class="alert"><b>游戏弹出了对话框，请在游戏窗口里回答：</b>\n'+esc(C.dialog[1])
+          +'\n<button id="front" style="margin-top:8px">切换到这个对话框</button></div>' : '')
+      + '<div class="actions" style="margin-top:10px"><button id="cancel">取消检测</button></div>';
+  } else if (r){
+    const t = TIERS[r.tier] || [r.tier, ""];
+    h += '<div class="result '+esc(r.tier)+'"><b>'+t[0]+'</b>'+esc(r.why)
+      + (r.features ? '<div class="chips">'+r.features.map(f => '<span class="tag">'+esc(f)+'</span>').join("")+'</div>' : '')
+      + '<div class="muted" style="margin-top:8px">'+(r.adapter ? '适配器 '+esc(r.adapter)+' · ' : '')
+      + (r.loader ? '加载方式 '+esc(r.loader)+' · ' : '') + '检测于 '+new Date(r.when*1000).toLocaleString()+'</div></div>'
+      + (C ? '<ul class="steps">'+C.steps.map(s => '<li>'+esc(s)+'</li>').join("")+'</ul>' : '');
+  } else {
+    h += '<p class="muted" style="margin:0">还没有检测过。检测会用空的临时存档启动一次游戏（不碰你的存档），'
+      + '自动点过片头到标题画面，然后关闭游戏、恢复原样。</p>';
+  }
+  return h + '</div>';
+}
+function taskSummary(T){
+  const n = k => T.log.filter(l => l.startsWith(k)).length;
+  const what = T.kind == "uninstall" ? "卸载" : "安装";
+  let head;
+  if (!T.done) head = "正在" + what + "…";
+  else if (T.ok) head = T.kind == "uninstall" ? "✔ 已卸载（移除了 " + n("remove") + " 个文件）"
+                                              : "✔ 已安装（写入 " + (n("install") + n("update")) + " 个文件，游戏自己的文件没有改动）";
+  else head = "✘ " + what + "没有全部完成：" + (T.log.filter(l => /^(SKIP|MISSING|出错)/.test(l)).join("；") || "见详情");
+  return '<div class="result '+(T.done ? (T.ok ? "ready" : "no") : "basic")+'" style="margin-top:12px">'+esc(head)
+    + '<details style="margin-top:6px"><summary class="muted" style="cursor:pointer">详情</summary><div class="log">'
+    + esc(T.log.join("\n")) + '</div></details></div>';
+}
+
+function gameView(g){
+  const i = g.install, busy = !!(S.task && !S.task.done) || !!(S.check && S.check.status == "running");
+  const live = isLive(g);
+  let primary;
+  const checking = S.check && S.check.status == "running" && S.check.path.toLowerCase() == g.path.toLowerCase();
+  if (checking) primary = '<button disabled>检测进行中</button>';
+  else if (i.state == "installed") primary = '<button class="danger" id="uninstall">卸载插件</button>';
+  else if (i.state == "blocked") primary = '<button disabled title="游戏自带的 version.dll 和 mpr.dll 都已被占用">无法安装</button>';
+  else primary = '<button class="primary" id="install">'+(i.state == "outdated" ? "更新插件" : "一键安装")+'</button>';
+  const exes = g.engines.map(([n,a]) => '<option value="'+esc(n)+'"'+(n==g.exe?" selected":"")+'>'+esc(n)+'（'+a+'）</option>').join("");
+  const launch = g.launch || "";
+  const lopts = ['<option value=""'+(launch?"":" selected")+'>与上面相同</option>']
+    .concat((g.launchers || []).map(n => '<option value="'+esc(n)+'"'+(n==launch?" selected":"")+'>'+esc(n)+'</option>')).join("");
+  const T = S.task && S.task.path.toLowerCase() == g.path.toLowerCase() ? S.task : null;
+  return '<div class="title"><div style="flex:1;min-width:0"><h2>'+esc(g.name)+'</h2><div class="path">'+esc(g.path)+'</div></div>'
+    + (live ? '<span class="tag live">运行中</span>' : '') + '</div>'
+    + '<div class="card"><h2>插件</h2><div class="kv">'
+    + '<div>状态</div><div>'+(checking ? '<span class="tag info">检测期间临时安装</span>' : installTag(i)
+      + (i.proxy && i.state != "none" ? ' <span class="muted">以 '+esc(i.proxy)+' 加载</span>' : ''))
+    + (i.state == "none" && i.proxy == "mpr.dll" ? ' <span class="muted">游戏自带 version.dll，会改用 mpr.dll</span>' : '')+'</div>'
+    + '<div>引擎</div><div>'+esc(g.engine == "krkrz" ? "吉里吉里Z" : "吉里吉里2")+' '+esc(g.version)+' · '+esc(g.arch == "x64" ? "64 位" : "32 位")+'</div>'
+    + '<div>游戏程序</div><div><select id="exe" aria-label="游戏程序">'+exes+'</select></div>'
+    + ((g.launchers || []).length ? '<div>启动用</div><div><select id="launch" aria-label="启动游戏时运行的程序">'+lopts+'</select>'
+       + ' <span class="muted">有汉化启动器时选它</span></div>' : '')
+    + '</div><div class="actions" style="margin-top:14px">'+primary
+    + '<button id="check"'+(busy||live?" disabled":"")+'>检测兼容性</button>'
+    + '<button id="launchbtn"'+(live?" disabled":"")+'>启动游戏</button>'
+    + '<button class="ghost" id="open">打开文件夹</button>'
+    + '<button class="ghost" id="remove" title="只从列表中移除，不动游戏文件">从列表移除</button></div>'
+    + (T ? taskSummary(T) : '')
+    + '</div>' + checkCard(g) + (live ? liveCard() : "");
+}
+
+function render(force){
+  if (!S) return;
+  $("ver").textContent = "v" + S.version;
+  renderPills(); renderList();
+  const g = selected && S.games.find(x => x.path.toLowerCase() == selected.toLowerCase());
+  const html = g ? gameView(g) : welcome();
+  // keep the page still (and an open <select>) when nothing changed
+  if (!force && html == lastHtml) return;
+  if (!force && document.activeElement && document.activeElement.tagName == "SELECT") return;
+  lastHtml = html; $("main").innerHTML = html; bind(g);
+}
+
+function bind(g){
+  const on = (id, fn) => { const e = $(id); if (e) e.onclick = fn; };
+  document.querySelectorAll("[data-tb]").forEach(b => b.onclick = () => act("/api/textbox", {mode:b.dataset.tb}));
+  on("report", async () => { toast("正在生成报告…", true); const r = await act("/api/report", {});
+    if (r && r.file){ toast("报告已保存", true); api("/api/open", {file:r.file}); } });
+  on("addlive", () => act("/api/add", {path:S.live.game.path}, "已加入列表"));
+  if (!g) return;
+  const P = {path:g.path};
+  on("install", () => act("/api/install", P));
+  on("uninstall", () => { if (confirm("从这个游戏里移除插件？（只删除插件自己的文件）")) act("/api/uninstall", P); });
+  on("check", () => act("/api/check", P));
+  on("cancel", () => act("/api/check/cancel", {}));
+  on("front", () => act("/api/check/front", {}));
+  on("launchbtn", () => act("/api/launch", P, "已启动游戏"));
+  on("open", () => act("/api/open", P));
+  on("remove", () => { if (confirm("从列表中移除「"+g.name+"」？游戏文件不受影响。")){ selected = null; act("/api/remove", P); } });
+  const ex = $("exe"); if (ex) ex.onchange = () => act("/api/exe", {path:g.path, exe:ex.value});
+  const ln = $("launch"); if (ln) ln.onchange = () => act("/api/exe", {path:g.path, exe:g.exe, launch:ln.value});
+}
+
+async function refresh(){
+  try{ S = await api("/api/overview"); render(false); }
+  catch(e){ $("pills").innerHTML = '<span class="pill"><span class="dot bad"></span>管理器已关闭</span>'; }
+}
+
+$("add").onclick = async () => {
+  const r = await act("/api/pick", {});
+  if (r && r.added && r.added.length){
+    if (r.added.length == 1) selected = r.added[0];
+    toast(r.added.length == 1 ? "已添加" : "找到并添加了 "+r.added.length+" 个游戏", true); render(true);
+  }
+};
+$("filter").oninput = e => { filterText = e.target.value; renderList(); };
+$("quit").onclick = async () => {
+  if (!confirm("退出 KiriPanel？3DS 将看不到台词，直到再次打开。")) return;
+  await api("/api/quit", {}); document.body.innerHTML = '<div class="empty" style="padding-top:30vh">KiriPanel 已退出，可以关闭这个窗口。</div>';
+};
+// closing the window ends the manager (and the relay with it)
+addEventListener("pagehide", () => navigator.sendBeacon("/api/bye?t=" + encodeURIComponent(TOKEN)));
+refresh();
+setInterval(() => { if (document.visibilityState == "visible" || Math.random() < .2) refresh(); }, 1000);
+</script>
+</body>
+</html>

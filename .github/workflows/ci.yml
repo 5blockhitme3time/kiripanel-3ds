@@ -65,22 +65,10 @@ jobs:
           submodules: recursive
 
       - name: Install FreeType
-        run: sudo apt-get update && sudo apt-get install -y libfreetype6
+        run: sudo apt-get update && sudo apt-get install -y libfreetype-dev pkg-config
 
       - name: Build and run the panel tests
-        working-directory: console/panel_preview
-        run: |
-          g++ -std=gnu++17 -O1 -g -Wall -Wextra -Wno-unused-parameter \
-            -fsanitize=address,undefined -fno-omit-frame-pointer \
-            -I../moonlight-n3ds/src/panel -I../moonlight-n3ds/src/relay \
-            -I/usr/include/freetype2 \
-            main.cpp png.cpp host_assets.cpp \
-            ../moonlight-n3ds/src/panel/panel_ui.cpp \
-            ../moonlight-n3ds/src/panel/panel_draw.cpp \
-            ../moonlight-n3ds/src/panel/panel_font.cpp \
-            ../moonlight-n3ds/src/relay/relay_protocol.cpp \
-            -lfreetype -o panel_test
-          ./panel_test ../moonlight-n3ds/3ds/data/hkfont.ttf --test
+        run: bash console/panel_preview/build.sh
 
   console:
     name: 3DS app

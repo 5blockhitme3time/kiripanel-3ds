@@ -29,11 +29,12 @@ dev/scout/
 dev/testdata/
 dev/testsave/
 archive/
-# the game the plugin is installed into during development
-kiripanel/
-_hkstate.ksd
-_hkcmd.ksd
-_hkscout.ksd
+# the game the plugin is installed into during development - anchored to the
+# repository root: pc/kiripanel/ is the PC side's own package, not this
+/kiripanel/
+/_hkstate.ksd
+/_hkcmd.ksd
+/_hkscout.ksd
 
 # release packages (built by pc/build.py --zip, attached to a release)
 dist/*.zip
