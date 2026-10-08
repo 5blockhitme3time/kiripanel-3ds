@@ -1,0 +1,646 @@
+/*
+	core.tjs - the game-independent half of the 3DS panel hook.
+
+	Talks to relay.py through two files in the save-data directory, both in
+	the saveStruct text format (TJS has no general file-read API, but
+	Scripts.evalStorage() reads that format back, as the game reads its own
+	saves):
+
+	  _hkstate.ksd  written here when something changes (and every 2 s as a
+	                heartbeat), read by relay.py
+	  _hkcmd.ksd    written by relay.py: a short queue of numbered commands,
+	                each executed once and acknowledged in _hkstate.ksd, plus
+	                the "hide the textbox" request and its heartbeat
+
+	Scripts.evalStorage() on a missing storage raises in a way that survives
+	try/catch and kills the timer, so the command file is created here at
+	startup if the relay has not created it yet, and existence is always
+	checked first.
+
+	What is the same in every KAG game lives here: the command queue, the
+	state file, textbox hiding by opacity and keeping that out of saves.
+	Everything that knows a particular game is in an adapter (see
+	adapter_base.tjs). The core picks the adapter, and if the adapter keeps
+	failing it is dropped and the core carries on without it, so a game the
+	hook does not understand plays exactly as it would without the hook.
+
+	Kept ASCII-only on purpose: the file has no BOM, and ASCII reads the same
+	under every encoding the engine might assume.
+*/
+
+class KPCore
+{
+	var version = "1.0.0";
+	var statePath;
+	var cmdPath;
+	var boot;
+	var rev = 0;
+	var timer;
+	var loader;
+
+	// Adapter selection.
+	var adapter;
+	var adapterGen = 0;
+	var banned = %[];            // adapter id -> true after it kept failing
+	var degraded = "";           // id of the adapter that was dropped
+	var detectAt = 0;
+	var failTicks = 0;           // consecutive ticks in which the adapter raised
+	var failedThisTick = false;
+
+	// Mirror of the game's text. Each entry is [id, gen, name, text]; ids
+	// only ever grow, and gen changes whenever the adapter reports that the
+	// text was replaced (new game, load) or cut back (backlog jump), so the
+	// relay can put a divider there instead of mixing unrelated text.
+	var lines = [];
+	var nextId = 1;
+	var gen = 0;
+
+	// Command channel.
+	var cmdEpoch = -1;
+	var cmdSeq = 0;
+	var cmdQueue = [];
+	var pending = void;
+	var pendingSince = 0;
+	var acks = [];
+
+	var lastSig = "";
+	var lastWrite = 0;
+	var lastErr = "";
+	var errReported = 0;
+	var readFails = 0;
+
+	// Textbox hiding (see the section below). The relay asks for it while a
+	// console shows the dialogue, and keeps `beat` moving; if it stops - the
+	// relay died - the box comes back by itself.
+	var tbWanted = false;
+	var tbBeat = -1;
+	var tbBeatAt = 0;
+	var tbActive = false;
+	var tbSaved = [];          // [layer, opacity before hiding]
+	var tbOrigStore = void;
+	var tbOrigRestore = void;
+	var tbHealed = 0;
+
+	function KPCore()
+	{
+		loader = typeof global.kiripanel_loaded_by != "undefined"
+			? global.kiripanel_loaded_by : "script";
+		var base = System.dataPath;
+		if (base.charAt(base.length - 1) != "/")
+			base += "/";
+		statePath = base + "_hkstate.ksd";
+		cmdPath   = base + "_hkcmd.ksd";
+		boot = System.getTickCount();
+		adapter = new KPAdapterNone(this, true);
+
+		writeSession(base);
+
+		if (!Storages.isExistentStorage(cmdPath))
+		{
+			var empty = %[];
+			empty.epoch = 0;
+			empty.cmds = [];
+			(Dictionary.saveStruct incontextof empty)(cmdPath, "");
+		}
+
+		timer = new Timer(this, "onTick");
+		timer.interval = 100;
+		timer.enabled = true;
+	}
+
+	function finalize()
+	{
+		invalidate timer if timer !== void;
+	}
+
+	// ---- helpers ---------------------------------------------------------
+
+	function log(text)
+	{
+		try
+		{
+			if (typeof global.KiriPanelNative != "undefined")
+				KiriPanelNative.log(text);
+			else
+				Debug.message("kiripanel: " + text);
+		}
+		catch(e) {}
+	}
+
+	function note(where, e)
+	{
+		// Remembered for the state file; logged at most every few seconds so
+		// a persistent fault cannot flood the log.
+		lastErr = where + ": " + e.message;
+		try { if (typeof e.trace != "undefined" && e.trace != "") lastErr += " @ " + e.trace; } catch(e2) {}
+		var now = System.getTickCount();
+		if (now - errReported > 5000)
+		{
+			errReported = now;
+			log(adapter.id + " " + lastErr);
+		}
+	}
+
+	// An adapter call that raised. Counted per tick; an adapter that keeps
+	// failing is dropped (see onTick).
+	function adapterFailed(where, e)
+	{
+		failedThisTick = true;
+		note(where, e);
+	}
+
+	// Tells relay.py where this game keeps its files, so it needs no
+	// per-game --savedir. Only possible with the tpm (TJS cannot write
+	// outside the save folder); without it the relay is given the folder.
+	function writeSession(base)
+	{
+		if (typeof global.KiriPanelNative == "undefined")
+			return;
+		try
+		{
+			var t = "proto=" + 3 + "\n";
+			t += "loader=" + loader + "\n";
+			t += "datapath=" + Storages.getLocalName(base) + "\n";
+			t += "exe=" + Storages.getLocalName(System.exeName) + "\n";
+			t += "boot=" + boot + "\n";
+			if (!KiriPanelNative.writeSession(t))
+				log("could not write session.txt");
+		}
+		catch(e)
+		{
+			note("session", e);
+		}
+	}
+
+	// ---- adapters --------------------------------------------------------
+
+	function detect(now)
+	{
+		if (now - detectAt < 500)
+			return;
+		detectAt = now;
+		var list = typeof global.kiripanel_adapters != "undefined"
+			? global.kiripanel_adapters : [];
+		var best = void;
+		var bestScore = 0;
+		// development: dev/probe.py can pin one adapter to test it on a game
+		// another adapter would win
+		var only = typeof global.kiripanel_only != "undefined" ? global.kiripanel_only : void;
+		for (var i = 0; i < list.count; i++)
+		{
+			var a = list[i];
+			if (banned[a.id] || (only !== void && a.id != only))
+				continue;
+			var s = 0;
+			try { s = +a.detect(); } catch(e) { s = 0; }
+			if (s > bestScore)
+			{
+				best = a;
+				bestScore = s;
+			}
+		}
+		if (best === void || best.id == adapter.id)
+			return;
+		var curScore = 0;
+		for (var i = 0; i < list.count; i++)
+			if (list[i].id == adapter.id)
+				try { curScore = +list[i].detect(); } catch(e) {}
+		if (bestScore > curScore)
+			switchTo(best);
+	}
+
+	function switchTo(entry)
+	{
+		var next;
+		try { next = entry.create(this); }
+		catch(e)
+		{
+			banned[entry.id] = true;
+			note("create " + entry.id, e);
+			return;
+		}
+		leaveAdapter();
+		adapter = next;
+		adapterGen++;
+		failTicks = 0;
+		// the new adapter's text starts a new section
+		gen++;
+		log("adapter " + entry.id);
+	}
+
+	// Puts the textbox back and lets the current adapter unwind, before the
+	// adapter is replaced or dropped.
+	function leaveAdapter()
+	{
+		if (tbActive)
+		{
+			tbRestore();
+			try { adapter.tbRefresh(); } catch(e) {}
+		}
+		tbActive = false;
+		try { adapter.detach(); } catch(e) {}
+	}
+
+	function drop()
+	{
+		var id = adapter.id;
+		banned[id] = true;
+		degraded = id;
+		log("adapter " + id + " keeps failing; dropped for this session: " + lastErr);
+		leaveAdapter();
+		adapter = new KPAdapterNone(this, false);
+		adapterGen++;
+		failTicks = 0;
+		detectAt = 0;   // a less specific adapter may still work
+	}
+
+	// ---- text mirror -----------------------------------------------------
+
+	// Adapters report each finished line once.
+	function addLine(name, text)
+	{
+		text = "" + text;
+		if (text == "")
+			return;
+		lines.add([nextId, gen, "" + name, text]);
+		nextId++;
+		if (lines.count > 40)
+			lines.erase(0);
+	}
+
+	// The adapter's text was replaced or cut back.
+	function newSection()
+	{
+		gen++;
+	}
+
+	// ---- commands --------------------------------------------------------
+
+	function readCommands()
+	{
+		if (!Storages.isExistentStorage(cmdPath))
+			return;
+		var q = Scripts.evalStorage(cmdPath);
+		if (q === void || q.cmds === void)
+			return;
+		var ep = +q.epoch;
+		var list = q.cmds;
+		tbWanted = q.hide !== void && +q.hide != 0;
+		var beat = q.beat === void ? -1 : +q.beat;
+		if (beat != tbBeat)
+		{
+			tbBeat = beat;
+			tbBeatAt = System.getTickCount();
+		}
+		if (ep != cmdEpoch)
+		{
+			// A new relay numbers its commands from 1 again, so acks for the
+			// old numbering would be misread; they are dropped with it.
+			var first = (cmdEpoch == -1);
+			cmdEpoch = ep;
+			cmdSeq = 0;
+			acks.clear();
+			cmdQueue.clear();
+			pending = void;
+			if (first)
+			{
+				// Anything already queued predates this game session.
+				for (var i = 0; i < list.count; i++)
+					if (+list[i].seq > cmdSeq)
+						cmdSeq = +list[i].seq;
+				return;
+			}
+		}
+		// the relay writes the list in ascending seq order
+		for (var i = 0; i < list.count; i++)
+		{
+			var c = list[i];
+			var s = +c.seq;
+			if (s > cmdSeq)
+			{
+				cmdSeq = s;
+				cmdQueue.add(c);
+			}
+		}
+	}
+
+	// Commands the core answers itself, whatever the adapter.
+	function execCore(c)
+	{
+		if (c.cmd == "scout")
+		{
+			if (typeof global.kiripanel_scout == "undefined")
+				return "unsupported";
+			return global.kiripanel_scout(this);
+		}
+		return adapter.exec(c);
+	}
+
+	function ack(seq, result)
+	{
+		acks.add([seq, result]);
+		if (acks.count > 16)
+			acks.erase(0);
+	}
+
+	function runCommands(now)
+	{
+		for (var guard = 0; guard < 4; guard++)
+		{
+			if (pending === void)
+			{
+				if (cmdQueue.count == 0)
+					return;
+				pending = cmdQueue[0];
+				cmdQueue.erase(0);
+				pendingSince = now;
+			}
+			var r;
+			// a failing command is reported, not counted against the
+			// adapter: it may be one the game refuses in this situation
+			try { r = execCore(pending); }
+			catch(e) { r = "error"; note("exec " + pending.cmd, e); }
+			if (r === void)
+				r = "unsupported";
+			if (r == "wait")
+			{
+				if (now - pendingSince < 3000)
+					return;
+				r = "busy";
+			}
+			ack(+pending.seq, r);
+			pending = void;
+		}
+	}
+
+	// ---- textbox hiding --------------------------------------------------
+	//
+	// While the console shows the dialogue, the game's own box on the
+	// streamed picture is a duplicate. It is hidden by layer OPACITY, not
+	// visibility: visibility belongs to the game (and KAG's user-hide state
+	// makes the next click un-hide instead of advance). Opacity changes
+	// nothing about how the game behaves.
+	//
+	// Opacity is part of every saved layer (KAGLayer.store), so saves are
+	// taken with the original values put back for the moment, and anything
+	// that comes back from a load at 0 is repaired (where the adapter says
+	// 0 can only be ours). Whatever the game does to re-apply the box's
+	// opacity is wrapped by the adapter (tbInstall), so the box never flashes
+	// back in between.
+
+	function tbTargets(withFrame)
+	{
+		try { return adapter.tbTargets(withFrame); }
+		catch(e) { adapterFailed("textbox targets", e); }
+		return [];
+	}
+
+	function tbApply()
+	{
+		var t = tbTargets(true);
+		for (var i = 0; i < t.count; i++)
+		{
+			var l = t[i];
+			if (l === void || !isvalid(l) || l.opacity == 0)
+				continue;
+			// A non-zero value here was set by the game after we hid the
+			// layer; that is the value to put back later.
+			var known = false;
+			for (var j = 0; j < tbSaved.count; j++)
+			{
+				if (tbSaved[j][0] === l)
+				{
+					tbSaved[j][1] = l.opacity;
+					known = true;
+					break;
+				}
+			}
+			if (!known)
+				tbSaved.add([l, l.opacity]);
+			l.opacity = 0;
+		}
+	}
+
+	function tbRestore()
+	{
+		for (var i = 0; i < tbSaved.count; i++)
+		{
+			var l = tbSaved[i][0];
+			if (isvalid(l) && l.opacity == 0)
+				l.opacity = tbSaved[i][1];
+		}
+		tbSaved.clear();
+	}
+
+	function tbHidByUs(l)
+	{
+		for (var j = 0; j < tbSaved.count; j++)
+			if (tbSaved[j][0] === l)
+				return true;
+		return false;
+	}
+
+	// Text layers at 0 after a load or backlog jump were carried in by a save
+	// taken while hidden - in games where the adapter says text layers are
+	// never transparent otherwise. Layers hidden during this very load are
+	// skipped: the game may re-apply the box's opacity while restoring, which
+	// already hid them again with the restored value remembered.
+	function tbHeal()
+	{
+		if (!adapter.healTextLayers)
+			return;
+		var t = tbTargets(false);
+		for (var i = 0; i < t.count; i++)
+		{
+			if (t[i] !== void && isvalid(t[i]) && t[i].opacity == 0
+				&& !tbHidByUs(t[i]))
+			{
+				t[i].opacity = 255;
+				tbHealed++;   // reported, so a leaking save path shows up
+			}
+		}
+	}
+
+	// Both wrappers find the core through the global, so they keep working
+	// (and stay harmless) whichever adapter is current.
+	function tbInstallCore()
+	{
+		if (tbOrigStore === void && typeof kag.internalStoreFlags != "undefined")
+		{
+			// storeFlags (every save point) and tempSave both go through
+			// here; the snapshot is taken with the real opacities.
+			tbOrigStore = kag.internalStoreFlags;
+			kag.internalStoreFlags = function()
+			{
+				var b = global.hk_panel_bridge;
+				if (!b.tbActive)
+					return b.tbOrigStore(...);
+				b.tbRestore();
+				try { b.tbOrigStore(...); }
+				catch(e) { b.tbApply(); throw e; }
+				b.tbApply();
+			};
+		}
+		if (tbOrigRestore === void && typeof kag.internalRestoreFlags != "undefined")
+		{
+			// a load replaces every layer's state; forget what we saved
+			// and hide whatever the load brought back
+			tbOrigRestore = kag.internalRestoreFlags;
+			kag.internalRestoreFlags = function()
+			{
+				var b = global.hk_panel_bridge;
+				b.tbSaved.clear();
+				var r = b.tbOrigRestore(...);
+				b.tbHeal();
+				if (b.tbActive)
+					b.tbApply();
+				return r;
+			};
+		}
+	}
+
+	function tbTick(now)
+	{
+		tbInstallCore();
+		try { adapter.tbInstall(); } catch(e) { adapterFailed("textbox install", e); }
+		var want = tbWanted && now - tbBeatAt < 4000
+			&& adapter.id != "none";
+		if (want && !tbActive)
+		{
+			tbActive = true;
+			tbApply();
+		}
+		else if (!want && tbActive)
+		{
+			tbActive = false;
+			tbRestore();
+			try { adapter.tbRefresh(); } catch(e) {}
+		}
+		if (tbActive)
+			tbApply();
+		else
+			tbHeal();
+	}
+
+	// ---- state file ------------------------------------------------------
+
+	function publish(now)
+	{
+		var loc = "unsupported", raw = "", dlg = 0, auto = 0, skip = 0, btn = 0;
+		var cur = void, sel = void;
+		try
+		{
+			loc = "" + adapter.location();
+			raw = "" + adapter.rawLocation();
+			dlg = adapter.dialogOpen() ? 1 : 0;
+			var m = adapter.modes();
+			auto = m[0] ? 1 : 0;
+			skip = m[1] ? 1 : 0;
+			btn = +adapter.buttons();
+			cur = adapter.current();
+			sel = adapter.selection();
+		}
+		catch(e)
+		{
+			adapterFailed("state", e);
+		}
+
+		var curText = "", curName = "";
+		if (cur !== void && cur[1] != "")
+		{
+			curName = "" + cur[0];
+			curText = "" + cur[1];
+		}
+		var selNum = -1;
+		var opts = [];
+		var optSig = "";
+		if (sel !== void)
+		{
+			selNum = +sel[0];
+			opts = sel[1];
+			for (var i = 0; i < opts.count; i++)
+				optSig += opts[i][3];
+		}
+
+		var lastLine = lines.count ? lines[lines.count - 1][0] : 0;
+		var lastAck = acks.count ? acks[acks.count - 1][0] : 0;
+		var sig = loc + "|" + raw + "|" + dlg + "|" + auto + skip + "|" + btn
+			+ "|" + gen + "|" + lastLine + "|" + curName + "|" + curText + "|"
+			+ selNum + ":" + opts.count + optSig + "|" + cmdEpoch + ":" + lastAck
+			+ "|" + lastErr + "|" + tbActive + "|" + adapter.id + "|" + degraded;
+
+		var changed = (sig != lastSig);
+		if (!changed && now - lastWrite < 2000)
+			return;
+		if (changed)
+		{
+			rev++;
+			lastSig = sig;
+		}
+		lastWrite = now;
+
+		var d = %[];
+		d.proto = 3;
+		d.hook = version;
+		d.boot = boot;
+		d.rev = rev;
+		d.loader = loader;
+		d.adapter = adapter.id;
+		d.degraded = degraded;
+		d.loc = loc;
+		d.rawLoc = raw;
+		d.dlg = dlg;
+		d.auto = auto;
+		d.skip = skip;
+		d.btn = btn;
+		d.gen = gen;
+		d.lines = lines;
+		d.cur = curText;
+		d.curName = curName;
+		d.sel = selNum;
+		d.opts = opts;
+		d.acks = acks;
+		d.cmdEpoch = cmdEpoch;
+		d.tb = tbActive ? 1 : 0;
+		d.tbHealed = tbHealed;
+		d.err = lastErr;
+		(Dictionary.saveStruct incontextof d)(statePath, "");
+	}
+
+	function onTick()
+	{
+		var now = System.getTickCount();
+		failedThisTick = false;
+		try { detect(now); } catch(e) { note("detect", e); }
+		try { adapter.tick(); } catch(e) { adapterFailed("tick", e); }
+		try
+		{
+			readCommands();
+			readFails = 0;
+			if (lastErr.indexOf("read:") == 0)
+				lastErr = "";
+		}
+		catch(e)
+		{
+			// A read that lands on the instant the relay swaps the file in
+			// fails once and succeeds on the next tick; only a run of
+			// failures means something is actually wrong.
+			readFails++;
+			if (readFails >= 10)
+				note("read", e);
+		}
+		try { runCommands(now); } catch(e) { note("run", e); }
+		try { tbTick(now); } catch(e) { note("textbox", e); }
+		try { publish(now); } catch(e) { note("publish", e); }
+
+		// About 3 s of an adapter raising on every tick: it does not fit
+		// this game (or this version of it).
+		if (failedThisTick && adapter.id != "none")
+		{
+			if (++failTicks >= 30)
+				drop();
+		}
+		else
+			failTicks = 0;
+	}
+}

@@ -1,0 +1,30 @@
+我有一个已经能用的项目：把 KiriKiri（吉里吉里）galgame 串流到 New 3DS LL，上屏是 Moonlight 视频流，下屏原生显示台词并能操作游戏（前进、自动、快进、选项、存读档、回标题、隐藏电脑上的原生对话框）。目前只适配了一款游戏《与恋爱初次见面》（KiriKiri Z 1.3.3.7 + KAG3 3.32 + 开发商自建的回想/选项/存档系统）。我想把游戏侧部分做成通用 KiriKiri 插件，让其他 KiriKiri 游戏也能用。
+
+## 现有代码（先读，能复用的不要重写）
+项目目录见仓库根；先看记忆文件 galgame-3ds-panel.md 和 devkitpro-wsl-setup.md。
+- 游戏侧钩子：游戏目录里的 AfterInit2.tjs（这款游戏的 initialize.tjs 会加载 exe 目录下的 AfterInit2.tjs）。其中通用部分：命令队列、状态文件、saveStruct 读写、heartbeat、用图层 opacity 隐藏对话框及存档保护（包装 kag.internalStoreFlags/internalRestoreFlags）。游戏专用部分：tf.BL_Data、systembutton_object、TxSL_Process、BM.BookMark、TI.Title、f.NowLocate 等。
+- relay.py（+ test_relay.py）：PC 中继，与游戏无关，协议见文件头和 moonlight-n3ds/src/relay/relay_protocol.hpp。
+- moonlight-n3ds/：Moonlight-N3DS fork（n3ds-main 分支，改动未提交），src/panel、src/relay 是面板，与游戏无关。
+- tools/panel_preview/build.sh：在 WSL 里原生编译面板，做渲染预览和测试（ASan）。
+- wsl_build_report.sh / wsl_export.sh：3DS 构建与导出。kgrep.py：搜游戏脚本（UTF-16/SJIS 混合编码）。xp3tool.py / unpack.py / robustsolve.py / _extract_missing.py：解包这款游戏的 xp3。
+
+## 目标
+1. 通用加载方式，不依赖游戏恰好加载 AfterInit2.tjs。先调研并验证：KiriKiri 启动时自动加载 exe 目录及 plugin\ 下 *.tpm（这款游戏的日志里有 "Loading koihazi.tpm"）。写一个 tpm（DLL，导出 V2Link，用 tp_stub 执行 TJS），等 global.kag 就绪后安装钩子。要考虑 32/64 位、krkr2 与 krkrz 的差异、游戏关掉自动加载的情况。备选：补丁 xp3 / Override.tjs（可能覆盖游戏同名文件，要谨慎）。
+2. 钩子拆成"核心 + 适配器"：
+   - 核心：与游戏无关的通信、对话框隐藏、存档保护、错误上报。
+   - 通用 KAG3 适配器，只用标准接口：台词（kag.historyLayer 或 MessageLayer 的文字处理）、前进 kag.onPrimaryClick()、自动/快进 enterAutoMode/cancelAutoMode/skipToStop/cancelSkip、[link] 选项（当前消息层的 links + processLink）、存读档 saveBookMark/loadBookMark、回标题 goToStart、判断是否在菜单（usingExtraConductor 等）。
+   - 这款游戏的专用适配器：把现有逻辑搬进去，功能不能退化。
+   - 自动检测该用哪个适配器（KAG3 / KAGEX 等魔改版 / 已知游戏），检测不到时降级运行，不能让游戏报错。
+   - 侦察模式：对新游戏导出全局对象、插件列表、图层树、消息层，以及疑似回想/选项/系统按钮的对象，帮我给新游戏写适配器。
+3. 3DS 字体：现在内置的是按这款游戏剧本做的子集，换游戏会缺字。改成支持从 SD 卡加载完整 CJK 字体（或内置常用简繁日汉字子集），缺字时有回退。
+4. 给普通玩家的安装与排错说明。
+
+## 约束
+- 只调用游戏自己的函数，不模拟鼠标键盘。
+- TJS 钩子保持纯 ASCII（无 BOM，引擎可能按不同编码读取）。
+- 测试时用 -datapath 指向存档副本，绝不碰我的真实存档；删除或覆盖文件前先问我。
+- 先保证《与恋爱初次见面》在新结构下全部功能不退化（现有测试 + 真游戏回归），再扩展到其他游戏。
+- 我手上还有哪些 KiriKiri 游戏可以拿来测试，请先问我。
+- 不要承诺"支持所有 KiriKiri 游戏"：在文档里写清支持分级（开箱即用 / 需要适配器 / 不支持）。
+
+请先读代码和记忆文件、调研 tpm 加载机制，给我一个分阶段计划（每个阶段都能单独验证），我确认后再动手。

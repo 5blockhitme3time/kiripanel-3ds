@@ -1,0 +1,117 @@
+/*
+	adapter_base.tjs - what a game adapter provides to the panel core.
+
+	The core (core.tjs) owns everything that is the same in every game: the
+	files shared with relay.py, the command queue, hiding the textbox by
+	opacity and keeping saves clean of that. An adapter knows one game (or
+	one family of games): where the text is, how to choose an option, which
+	of the game's own functions do auto/skip/save, and so on.
+
+	Adapters are registered by their file with a factory:
+
+	  global.kiripanel_adapters.add(%[
+	      "id" => "mygame",
+	      "detect" => function() { return score; } incontextof global,
+	      "create" => function(core) { return new KPAdapterMyGame(core); }
+	          incontextof global
+	  ]);
+
+	detect() is called repeatedly while the game starts up and must only
+	look (typeof checks), never change anything. 0 = not this game. The
+	core switches to a higher-scoring adapter whenever one appears (game
+	objects are often created a while after the hook is installed) and never
+	back down, except when an adapter keeps raising errors: then it is
+	dropped for the rest of the session and the core carries on without it.
+
+	Location codes (location()):
+	  play        reading the story; the panel's normal state
+	  title       the title screen
+	  save load config backlog gallery ending
+	              the game's own full-screen menus
+	  menu        some other menu
+	  unsupported the hook is running but no adapter knows this game
+
+	Button bits (buttons()), as the 3DS shows them:
+	  1 auto  2 skip  4 voice  8 quick save  16 quick load
+	  32 settings  64 save  128 load  256 back to title
+	  512 continue (title)  1024 new game (title)
+
+	exec(cmd) returns a result code (see relay.py RESULTS), or "wait" to be
+	retried on the next tick for up to 3 s while the game is mid-transition.
+
+	Kept ASCII-only, like every file of the hook.
+*/
+
+class KPAdapter
+{
+	var core;
+	var id = "none";
+	// Message layers at opacity 0 can only be ours in this game, so the
+	// core may repair them after a load (see core.tjs, tbHeal).
+	var healTextLayers = false;
+
+	function KPAdapter(core)
+	{
+		this.core = core;
+	}
+
+	function finalize() {}
+
+	// Called when the core switches away from this adapter.
+	function detach() {}
+
+	// Per-tick bookkeeping, e.g. taking new lines into core.addLine().
+	function tick() {}
+
+	function location() { return "unsupported"; }
+	function rawLocation() { return ""; }
+
+	// A confirmation box of the game's own is open (the 3DS cannot answer it).
+	function dialogOpen() { return false; }
+
+	// [autoMode, skipMode] as 0/1.
+	function modes()
+	{
+		return [kag.autoMode ? 1 : 0, kag.skipMode ? 1 : 0];
+	}
+
+	// [name, text] of the line being typed, or void.
+	function current() { return void; }
+
+	// void, or [choice number, [[index, label, image, enabled, read], ...]].
+	function selection() { return void; }
+
+	function buttons() { return 0; }
+
+	function exec(c) { return "unsupported"; }
+
+	// Layers to make transparent while the console shows the dialogue.
+	// withFrame: also the frame and the window's buttons (false is used to
+	// find text layers a load may have brought back at 0).
+	function tbTargets(withFrame) { return []; }
+
+	// Wrap whatever in the game re-applies textbox opacity. Called every
+	// tick; must be idempotent.
+	function tbInstall() {}
+
+	// After the box comes back: let the game set the frame's opacity the
+	// way it normally would.
+	function tbRefresh() {}
+}
+
+// Used until an adapter recognises the game, and after one was dropped.
+class KPAdapterNone extends KPAdapter
+{
+	var detecting = true;
+
+	function KPAdapterNone(core, detecting = true)
+	{
+		super.KPAdapter(core);
+		this.detecting = detecting;
+	}
+
+	function location()
+	{
+		return detecting ? "detecting" : "unsupported";
+	}
+}

@@ -1,0 +1,458 @@
+/*
+	adapter_kagex.tjs - the "KAG Ex" system framework (KiriKiri Z 1.2 games
+	by Yuzusoft, Frontwing, Sprite and others: SystemActionBase,
+	DialogModeManager, HistoryTextStore, SelectLayer, KAGEnvironment).
+
+	Like every adapter it only READS the game's state and ACTS through the
+	game's own entry points. The ones used here were confirmed on RIDDLE
+	JOKER with dev/probe.py:
+
+	  finished lines   kag.historyLayer.data[i] = %[text, name, disp, voice]
+	                   (at most 100 entries; the oldest drop off the front)
+	  where we are     Current._now: "" in the story, "title", "save",
+	                   "load", ... (DialogModeManager; [syscurrent name=])
+	  choice on screen kag.selectShowing, buttons in kag.selectLayer.selects
+	                   (.text, .enabled); choosing = button.onExecute(),
+	                   what a mouse click on it ends in
+	  system buttons   SystemAction._auto/_skip/_qsave_/_qload_/_save/
+	                   _load/_option/_title_: the functions behind the quick
+	                   menu; the ones ending in _ are the variants the game
+	                   runs after its own "are you sure?" box says yes
+	  title menu       links of the title's message layer, by their target
+	                   (*game, *load, *continue, *option); pressed through
+	                   the link button's onExecute
+	  a question box   kag.currentDialog (the game's own yes/no)
+
+	Pressing anything only while kag.inStable: a press in the middle of a
+	screen change can leave the game's conductors in a state it reports as
+	a fatal error.
+
+	Kept ASCII-only, like every file of the hook.
+*/
+
+class KPAdapterKagEx extends KPAdapter
+{
+	var hLast = void;       // last history entry taken (by identity)
+	var hPending = void;    // the newest entry while it may still grow
+	var selFirst = void;    // first option button of the current choice
+	var selNum = 0;         // counts choices, so a stale tap is refused
+
+	function KPAdapterKagEx(core)
+	{
+		super.KPAdapter(core);
+		id = "kagex";
+	}
+
+	// ---- helpers ---------------------------------------------------------
+
+	function now()
+	{
+		try { return "" + global.Current._now; } catch(e) {}
+		return "";
+	}
+
+	function inGame()
+	{
+		return now() == "" && global.inGameState(kag);
+	}
+
+	function playing()
+	{
+		return inGame() && !kag.historyShowing && !dialogOpen();
+	}
+
+	function dialogOpen()
+	{
+		return kag.currentDialog !== void;
+	}
+
+	// "\i" (indent), "\r" (line end) and the like are the history store's
+	// own codes, not text.
+	function plainText(t)
+	{
+		return ("" + t).replace(/\\./g, "");
+	}
+
+	function entryName(e)
+	{
+		// disp is what the name plate shows ("???" before a character is
+		// introduced); name is who it really is
+		if (e.disp !== void && e.disp != "")
+			return "" + e.disp;
+		return e.name !== void ? "" + e.name : "";
+	}
+
+	function lastEntry()
+	{
+		var d = kag.historyLayer.data;
+		return d.count ? d[d.count - 1] : void;
+	}
+
+	// ---- where we are ----------------------------------------------------
+
+	function rawLocation()
+	{
+		var n = now();
+		if (n != "")
+			return n;
+		return inGame() ? (kag.historyShowing ? "backlog" : "game") : "";
+	}
+
+	function location()
+	{
+		var n = now();
+		if (n == "")
+		{
+			if (!inGame())
+				return "menu";        // logos, caution screens, start-up
+			if (kag.historyShowing)
+				return "backlog";
+			return "play";
+		}
+		if (n == "title") return "title";
+		if (n == "save") return "save";
+		if (n == "load") return "load";
+		if (n == "option" || n == "config") return "config";
+		if (n == "backlog" || n == "log") return "backlog";
+		if (n.indexOf("mode") >= 0 || n == "extra" || n == "gallery"
+			|| n == "scnchart" || n == "flowchart")
+			return "gallery";
+		return "menu";
+	}
+
+	// ---- dialogue mirror -------------------------------------------------
+	//
+	// The newest history entry is the line being shown, and the game adds to
+	// it until the reader clicks on; it is taken as finished once a newer
+	// entry follows, or once the game waits for a click (inStable). Until
+	// then it is the "current" line.
+
+	function tick()
+	{
+		var d = kag.historyLayer.data;
+		var n = d.count;
+		var from;
+		if (hLast === void)
+			from = 0;
+		else
+		{
+			from = -1;
+			for (var i = n - 1; i >= 0; i--)
+			{
+				if (d[i] === hLast)
+				{
+					from = i + 1;
+					break;
+				}
+			}
+			if (from < 0)
+			{
+				// what we took last is gone: a load, a new game, or a jump
+				// back through the backlog replaced the log
+				core.newSection();
+				from = n;
+				hPending = void;
+				if (n > 0)
+					hLast = d[n - 1];
+				// the entry on screen now is still worth showing
+				if (n > 0 && kag.inStable)
+					take(d[n - 1]);
+				return;
+			}
+		}
+		for (var i = from; i < n; i++)
+		{
+			var e = d[i];
+			if (e === void)
+				continue;
+			if (i == n - 1 && !kag.inStable)
+			{
+				hPending = e;   // still being written
+				break;
+			}
+			take(e);
+		}
+	}
+
+	function take(e)
+	{
+		hLast = e;
+		if (hPending === e)
+			hPending = void;
+		core.addLine(entryName(e), plainText(e.text));
+	}
+
+	function current()
+	{
+		if (hPending === void || !inGame())
+			return void;
+		return [entryName(hPending), plainText(hPending.text)];
+	}
+
+	// ---- choices ---------------------------------------------------------
+
+	function selectButtons()
+	{
+		if (!kag.selectShowing || kag.selectLayer === void)
+			return void;
+		var s = kag.selectLayer.selects;
+		return (s === void || s.count == 0) ? void : s;
+	}
+
+	function selection()
+	{
+		var s = selectButtons();
+		if (s === void || !inGame())
+			return void;
+		if (s[0] !== selFirst)
+		{
+			selFirst = s[0];
+			selNum++;
+		}
+		var out = [];
+		for (var i = 0; i < s.count; i++)
+		{
+			var b = s[i];
+			if (b === void || !isvalid(b))
+				continue;
+			out.add([i, plainText(b.text), "", b.enabled ? 1 : 0, 0]);
+		}
+		return [selNum, out];
+	}
+
+	// ---- title menu ------------------------------------------------------
+
+	// The title menu's link whose target is `target` ("*game"), or void.
+	function titleLink(target)
+	{
+		if (now() != "title")
+			return void;
+		var l = kag.current.links;
+		for (var i = 0; i < l.count; i++)
+			if (("" + l[i].target) == target && l[i].object !== void && isvalid(l[i].object))
+				return l[i].object;
+		return void;
+	}
+
+	function titleUsable(target)
+	{
+		var b = titleLink(target);
+		return b !== void && b.enabled && b.visible && kag.inStable && !dialogOpen();
+	}
+
+	function pressTitle(target)
+	{
+		var b = titleLink(target);
+		if (b === void)
+			return "unknown";
+		if (!kag.inStable || dialogOpen())
+			return "wait";
+		if (!b.enabled)
+			return target == "*continue" ? "nocontinue" : "disabled";
+		b.onExecute(1, 1, mbLeft, 0);
+		return "ok";
+	}
+
+	// ---- buttons ---------------------------------------------------------
+
+	function hasVoice()
+	{
+		var e = lastEntry();
+		return e !== void && e.voice !== void && e.voice.count > 0
+			&& typeof SystemAction._vreplay_ != "undefined";
+	}
+
+	function buttons()
+	{
+		var btn = 0;
+		if (playing())
+		{
+			if (!kag.selectShowing)
+			{
+				btn |= 1;
+				if (kag.nextSkipEnabled) btn |= 2;
+			}
+			if (hasVoice()) btn |= 4;
+			// as the game's own quick menu: no saving or loading in a scene
+			// replay, and screens open only while nothing is being drawn
+			var replay = kag.isRecollection;
+			if (!replay)
+			{
+				btn |= 8;
+				if (SystemAction.canQuickLoad) btn |= 16;
+			}
+			if (kag.inStable)
+			{
+				btn |= 32 | 256;
+				if (!replay) btn |= 64 | 128;
+			}
+		}
+		else if (now() == "title")
+		{
+			if (titleUsable("*option")) btn |= 32;
+			if (titleUsable("*load")) btn |= 128;
+			if (titleUsable("*continue")) btn |= 512;
+			if (titleUsable("*game")) btn |= 1024;
+		}
+		return btn;
+	}
+
+	// ---- commands --------------------------------------------------------
+
+	function exec(c)
+	{
+		var name = "" + c.cmd;
+		if (dialogOpen())
+			return "dialog";
+		if (now() == "title")
+		{
+			if (name == "newgame") return pressTitle("*game");
+			if (name == "continue") return pressTitle("*continue");
+			if (name == "load") return pressTitle("*load");
+			if (name == "config") return pressTitle("*option");
+			return "menu";
+		}
+		if (!inGame())
+		{
+			// logos and caution screens before the title go on with a click
+			// (they are not one of the game's screens: Current._now is "")
+			if (name == "click" && now() == "" && !kag.historyShowing)
+			{
+				kag.onPrimaryClick();
+				return "ok";
+			}
+			return "menu";
+		}
+		if (kag.historyShowing)
+			return "menu";
+
+		if (name == "click")
+		{
+			if (kag.selectShowing)
+				return "select";
+			kag.onPrimaryClick();
+			return "ok";
+		}
+		if (name == "auto" || name == "skip")
+		{
+			if (kag.selectShowing)
+				return "select";
+			if (name == "skip" && !kag.nextSkipEnabled && !kag.skipMode)
+				return "disabled";
+			if (name == "auto") SystemAction._auto(); else SystemAction._skip();
+			return "ok";
+		}
+		if (name == "voice")
+		{
+			if (!hasVoice())
+				return "novoice";
+			SystemAction._vreplay_();
+			return "ok";
+		}
+		if (name == "choose")
+		{
+			var s = selectButtons();
+			if (s === void)
+				return "noselect";
+			var num = +c.sel;
+			if (num >= 0 && num != selNum)
+				return "stale";
+			if (!kag.inStable)
+				return "wait";
+			var idx = +c.arg;
+			if (idx < 0 || idx >= s.count || s[idx] === void || !isvalid(s[idx]))
+				return "stale";
+			if (!s[idx].enabled)
+				return "disabled";
+			s[idx].onExecute(1, 1, mbLeft, 0);
+			return "chosen";
+		}
+		// the rest change screens or the game state: only when settled
+		if (name != "qsave" && name != "qload" && name != "save" && name != "load"
+			&& name != "config" && name != "title")
+			return "unknown";
+		if (!kag.inStable)
+			return "wait";
+		if (kag.isRecollection && name != "config" && name != "title")
+			return "scene";
+		if (name == "qsave")
+		{
+			SystemAction._qsave_();
+			return "saved";
+		}
+		if (name == "qload")
+		{
+			if (!SystemAction.canQuickLoad)
+				return "empty";
+			SystemAction._qload_();
+			return "loaded";
+		}
+		if (name == "save") { SystemAction._save(); return "ok"; }
+		if (name == "load") { SystemAction._load(); return "ok"; }
+		if (name == "config") { SystemAction._option(); return "ok"; }
+		// back to title without the game's question (the panel asked)
+		SystemAction._title_();
+		return "totitle";
+	}
+
+	// ---- textbox ---------------------------------------------------------
+	//
+	// The window is a message layer plus its text, name and face layers
+	// (siblings, not children, in this framework) and the quick menu bar.
+	// Only in the story: on the game's own screens the same message layers
+	// carry the screen.
+
+	function tbTargets(withFrame)
+	{
+		var out = [];
+		if (!inGame())
+			return out;
+		var names = ["textLayer", "nameLayer", "faceLayer"];
+		for (var p = 0; p < 2; p++)
+		{
+			var page = p ? kag.back : kag.fore;
+			for (var i = 0; i < page.messages.count; i++)
+			{
+				var m = page.messages[i];
+				if (m === void || !isvalid(m))
+					continue;
+				if (withFrame)
+					out.add(m);
+				for (var j = 0; j < names.count; j++)
+				{
+					var l = void;
+					try { l = m[names[j]]; } catch(e) {}
+					if (l !== void && typeof l == "Object" && isvalid(l) && l instanceof "Layer")
+						out.add(l);
+				}
+			}
+		}
+		if (withFrame)
+		{
+			var q = void;
+			try { q = kag.QuickMenu; } catch(e) {}
+			if (q !== void && typeof q == "Object" && isvalid(q) && q instanceof "Layer")
+				out.add(q);
+		}
+		return out;
+	}
+}
+
+global.kiripanel_adapters.add(%[
+	"id" => "kagex",
+	"detect" => function()
+	{
+		if (typeof global.kag == "undefined" || global.kag === void
+			|| typeof global.SystemAction == "undefined"
+			|| typeof global.SystemActionBase == "undefined"
+			|| typeof global.Current == "undefined"
+			|| typeof global.inGameState == "undefined"
+			|| typeof global.kag.selectLayer == "undefined"
+			|| typeof global.kag.historyLayer == "undefined"
+			|| typeof global.kag.historyLayer.getHistoryData == "undefined")
+			return 0;
+		return 80;
+	} incontextof global,
+	"create" => function(core) { return new KPAdapterKagEx(core); }
+		incontextof global
+]);

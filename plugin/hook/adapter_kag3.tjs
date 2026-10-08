@@ -1,0 +1,856 @@
+/*
+	adapter_kag3.tjs - any KAG3 game, through the interfaces every KAG3 has.
+	The fallback when no more specific adapter recognises the game.
+
+	  text             what the game puts in its backlog: every chunk of a
+	                   line passes kag.historyLayer.store(ch), which is
+	                   wrapped to keep a copy. The line is finished when the
+	                   game waits for a click (kag.inStable) or turns the
+	                   page.
+	  speaker          most KAG3 games draw the name plate into a message
+	                   layer of its own (the "[speaker]" macro writing to
+	                   message5). Each chunk is kept with the layer it went
+	                   to, and a short group on another layer than the body
+	                   of the line is the name. A leading "[name]" in CJK
+	                   brackets becomes the speaker too, for the games that
+	                   print it inside the text.
+	  choices          [link] options of the current message layer. A link's
+	                   text is what the game drew inside it, taken from the
+	                   ch tag handler, so it is known even where the game
+	                   turned its backlog off - which is exactly what its own
+	                   menus and title screens do.
+	  title menu       the links by the words in them, or by their target
+	                   (*load, *start, *config ...) where a menu is made of
+	                   pictures. Pressing one runs the game's own
+	                   processLink, what a click on it does.
+	  system screens   offered through global.systembutton_object, the
+	                   system button plugin of the KAG3 samples that many
+	                   games carry (auto, skip, save, load, config, title).
+	  where we are     the storage the game is running: title.ks,
+	                   system_save.ks, system_load.ks, system_config.ks,
+	                   album.ks ... as its own screens; kag.historyShowing
+	                   for the backlog; a question box (askYesNo) as a
+	                   dialog.
+
+	Standard KAG3 has no quick save of its own, so none is offered: saving
+	into a numbered slot would overwrite the player's saves.
+
+	Kept ASCII-only, like every file of the hook.
+*/
+
+class KPAdapterKag3 extends KPAdapter
+{
+	// The line being written: [message layer it went to, text], grouped so
+	// that the name plate can be told from the body.
+	var parts = [];
+	var partsLen = 0;
+
+	// The text drawn inside each link of the layer links belong to. KAG3
+	// keeps no text in a link object, and its inLink is not an index in
+	// every build, so the label is taken as the game draws it.
+	var labels = [];
+	var labelsLayer = void;
+	var curLink = -1;
+
+	var lastLinkSig = "";
+	var selNum = 0;
+	var dialogs = 0;        // question boxes of the game's own on screen
+
+	function KPAdapterKag3(core)
+	{
+		super.KPAdapter(core);
+		id = "kag3";
+		global.kiripanel_kag3 = this;
+	}
+
+	function finalize()
+	{
+		detach();
+		if (global.kiripanel_kag3 === this)
+			global.kiripanel_kag3 = void;
+	}
+
+	// ---- the hooks the game's own text goes through ----------------------
+
+	function install()
+	{
+		installStore();
+		installTags();
+		installDialog();
+	}
+
+	function installStore()
+	{
+		var h = kag.historyLayer;
+		if (h === void || !isvalid(h))
+			return;
+		if (typeof global.kiripanel_kag3_store != "undefined"
+			&& h.store === global.kiripanel_kag3_store)
+			return;
+		global.kiripanel_kag3_orig = %[ "store" => h.store, "repage" => h.repage,
+			"load" => h.load, "layer" => h ];
+		global.kiripanel_kag3_store = function(ch)
+		{
+			var o = global.kiripanel_kag3_orig;
+			var r = o.store(...);
+			try { var a = global.kiripanel_kag3; if (a !== void) a.onStore(ch); } catch(e) {}
+			return r;
+		} incontextof global;
+		global.kiripanel_kag3_repage = function()
+		{
+			try { var a = global.kiripanel_kag3; if (a !== void) a.flush(); } catch(e) {}
+			return global.kiripanel_kag3_orig.repage(...);
+		} incontextof global;
+		global.kiripanel_kag3_load = function(dic)
+		{
+			// a bookmark was read: what comes next is a new stretch of the
+			// story, and the console draws a line there
+			try { var a = global.kiripanel_kag3; if (a !== void) a.core.newSection(); } catch(e) {}
+			return global.kiripanel_kag3_orig.load(dic);
+		} incontextof global;
+		h.store = global.kiripanel_kag3_store;
+		if (typeof h.repage != "undefined")
+			h.repage = global.kiripanel_kag3_repage;
+		if (typeof h.load != "undefined")
+			h.load = global.kiripanel_kag3_load;
+	}
+
+	// The tag handlers are plain functions in a table both conductors share,
+	// so wrapping one entry is enough. What they draw into a link is the
+	// only place its label exists.
+	function installTags()
+	{
+		var th = kag.tagHandlers;
+		if (th === void || th.ch === void || th.link === void)
+			return;
+		if (typeof global.kiripanel_kag3_ch != "undefined" && th.ch === global.kiripanel_kag3_ch)
+			return;
+		if (typeof global.kiripanel_kag3_th == "undefined")
+			global.kiripanel_kag3_th = %[];
+		var o = global.kiripanel_kag3_th;
+		o.ch = th.ch;
+		o.link = th.link;
+		o.endlink = th.endlink;
+		global.kiripanel_kag3_link = function(elm)
+		{
+			try { var a = global.kiripanel_kag3; if (a !== void) a.onLink(); } catch(e) {}
+			return global.kiripanel_kag3_th.link(elm);
+		} incontextof global;
+		global.kiripanel_kag3_endlink = function(elm)
+		{
+			try { var a = global.kiripanel_kag3; if (a !== void) a.onEndLink(); } catch(e) {}
+			return global.kiripanel_kag3_th.endlink(elm);
+		} incontextof global;
+		global.kiripanel_kag3_ch = function(elm)
+		{
+			var r = global.kiripanel_kag3_th.ch(elm);
+			// -5 is "run this tag again later": the text was not drawn yet
+			try
+			{
+				var a = global.kiripanel_kag3;
+				if (a !== void && r != -5)
+					a.onCh("" + elm.text);
+			}
+			catch(e) {}
+			return r;
+		} incontextof global;
+		th.link = global.kiripanel_kag3_link;
+		if (th.endlink !== void)
+			th.endlink = global.kiripanel_kag3_endlink;
+		th.ch = global.kiripanel_kag3_ch;
+	}
+
+	// askYesNo opens a modal window the console cannot reach. While it runs,
+	// the panel says so and the player answers it on the computer.
+	function installDialog()
+	{
+		if (global.askYesNo === void)
+			return;
+		if (typeof global.kiripanel_kag3_ask != "undefined"
+			&& global.askYesNo === global.kiripanel_kag3_ask)
+			return;
+		global.kiripanel_kag3_ask_orig = global.askYesNo;
+		global.kiripanel_kag3_ask = function()
+		{
+			var a = global.kiripanel_kag3;
+			if (a !== void)
+				a.dialogs++;
+			var r;
+			try
+			{
+				r = global.kiripanel_kag3_ask_orig(...);
+			}
+			catch(e)
+			{
+				if (a !== void)
+					a.dialogs--;
+				throw e;
+			}
+			if (a !== void)
+				a.dialogs--;
+			return r;
+		} incontextof global;
+		global.askYesNo = global.kiripanel_kag3_ask;
+	}
+
+	function detach()
+	{
+		var o = typeof global.kiripanel_kag3_orig != "undefined" ? global.kiripanel_kag3_orig : void;
+		if (o !== void && o.layer !== void && isvalid(o.layer)
+			&& typeof global.kiripanel_kag3_store != "undefined")
+		{
+			if (o.layer.store === global.kiripanel_kag3_store)
+				o.layer.store = o.store;
+			if (o.layer.repage === global.kiripanel_kag3_repage)
+				o.layer.repage = o.repage;
+			if (o.layer.load === global.kiripanel_kag3_load)
+				o.layer.load = o.load;
+			global.kiripanel_kag3_orig = void;
+		}
+		var th = kag.tagHandlers;
+		if (th !== void && typeof global.kiripanel_kag3_th != "undefined")
+		{
+			var t = global.kiripanel_kag3_th;
+			if (th.ch === global.kiripanel_kag3_ch)
+				th.ch = t.ch;
+			if (th.link === global.kiripanel_kag3_link)
+				th.link = t.link;
+			if (th.endlink === global.kiripanel_kag3_endlink)
+				th.endlink = t.endlink;
+		}
+		if (typeof global.kiripanel_kag3_ask != "undefined"
+			&& global.askYesNo === global.kiripanel_kag3_ask)
+			global.askYesNo = global.kiripanel_kag3_ask_orig;
+	}
+
+	// ---- the line --------------------------------------------------------
+
+	function onStore(ch)
+	{
+		ch = "" + ch;
+		if (ch == "")
+			return;
+		addPart(ch);
+	}
+
+	// What the game drew inside a link. Only while the layer the links were
+	// made on is the one being drawn into.
+	function onCh(t)
+	{
+		if (curLink < 0 || t == "")
+			return;
+		var m = kag.current;
+		if (m === void || m !== labelsLayer)
+			return;
+		if (labels[curLink] === void)
+			labels[curLink] = "";
+		labels[curLink] += t;
+	}
+
+	function onLink()
+	{
+		var m = kag.current;
+		if (m === void || typeof m.numLinks == "undefined")
+			return;
+		if (m !== labelsLayer || m.numLinks == 0)
+		{
+			labelsLayer = m;
+			labels = [];
+		}
+		curLink = m.numLinks;
+		labels[curLink] = "";
+	}
+
+	function onEndLink()
+	{
+		curLink = -1;
+	}
+
+	function addPart(ch)
+	{
+		var m = kag.current;
+		var last = parts.count ? parts[parts.count - 1] : void;
+		if (last !== void && last[0] === m)
+			last[1] += ch;
+		else
+			parts.add([m, ch]);
+		partsLen += ch.length;
+		if (partsLen > 600)
+			flush();
+	}
+
+	// Whitespace, including the CJK full-width space (U+3000), cut from both
+	// ends. ($n is the character with code n; the file stays ASCII.)
+	function trim(t)
+	{
+		var a = 0, b = t.length;
+		while (a < b && (#t.charAt(a) <= 32 || #t.charAt(a) == 0x3000))
+			a++;
+		while (b > a && (#t.charAt(b - 1) <= 32 || #t.charAt(b - 1) == 0x3000))
+			b--;
+		return t.substring(a, b - a);
+	}
+
+	// [name]text -> [name, text] (U+3010 / U+3011 brackets), for games that
+	// print the speaker in the text itself.
+	function split(t)
+	{
+		if (t.length > 0 && #t.charAt(0) == 0x3010)
+		{
+			var e = t.indexOf($0x3011);
+			if (e > 0 && e < 24)
+				return [t.substring(1, e - 1), t.substring(e + 1)];
+		}
+		return ["", t];
+	}
+
+	// The name plate and the body of a line are drawn into different message
+	// layers in most KAG3 games, the plate first. A group that is short next
+	// to a longer one is taken as the name; anything else is one text, in
+	// the order the game drew it.
+	function lineOf(g)
+	{
+		if (g.count == 0)
+			return void;
+		if (g.count == 1)
+			return ["", g[0][1]];
+		var bi = 0, other = 0, i;
+		for (i = 0; i < g.count; i++)
+			if (g[i][1].length > g[bi][1].length)
+				bi = i;
+		for (i = 0; i < g.count; i++)
+			if (i != bi)
+				other += g[i][1].length;
+		var text = "", name = "";
+		if (other > 0 && other <= 24)
+		{
+			for (i = 0; i < g.count; i++)
+			{
+				if (i == bi) text = g[i][1];
+				else name += g[i][1];
+			}
+		}
+		else
+		{
+			for (i = 0; i < g.count; i++)
+				text += g[i][1];
+		}
+		return [trim(name), text];
+	}
+
+	function flush()
+	{
+		var g = parts;
+		parts = [];
+		partsLen = 0;
+		var p = lineOf(g);
+		if (p === void)
+			return;
+		var t = trim(p[1]);
+		if (t == "")
+			return;
+		if (p[0] != "")
+		{
+			core.addLine(p[0], t);
+			return;
+		}
+		var s = split(t);
+		core.addLine(s[0], s[1]);
+	}
+
+	function tick()
+	{
+		install();
+		if (kag.inStable && parts.count)
+			flush();
+	}
+
+	// ---- where we are ----------------------------------------------------
+
+	function storage()
+	{
+		try
+		{
+			if (kag.usingExtraConductor)
+				return "" + kag.extraConductor.curStorage;
+			return "" + kag.conductor.curStorage;
+		}
+		catch(e) {}
+		return "";
+	}
+
+	function rawLocation()
+	{
+		return storage();
+	}
+
+	// The last position of `ch` in `s`, or -1. TJS2 strings have no
+	// lastIndexOf.
+	function tail(s, ch)
+	{
+		var i = -1;
+		for (var k = 0; k < s.length; k++)
+			if (s.charAt(k) == ch)
+				i = k;
+		return i;
+	}
+
+	// Is `w` one word of the name `n`, where words are parted by "_"?
+	function word(n, w)
+	{
+		if (n == w)
+			return true;
+		if (n.indexOf(w + "_") == 0)
+			return true;
+		return n.indexOf("_" + w) >= 0;
+	}
+
+	// The game's own screens are ordinary scenario files with names KAG3
+	// games keep: system_save.ks, system_load.ks, title.ks ... Words are
+	// matched whole, so a story file called scene01.ks is not a menu.
+	function screenOf(s)
+	{
+		var n = ("" + s).toLowerCase();
+		var cut = tail(n, "/");
+		var b = tail(n, $0x5C);
+		if (b > cut)
+			cut = b;
+		if (cut >= 0)
+			n = n.substring(cut + 1);
+		var e = n.indexOf(".");
+		if (e > 0)
+			n = n.substring(0, e);
+		if (word(n, "title")) return "title";
+		if (word(n, "save") || word(n, "savedata") || word(n, "savemode"))
+			return "save";
+		if (word(n, "load") || word(n, "loadmode")) return "load";
+		if (word(n, "config") || word(n, "configmode") || word(n, "option")
+			|| word(n, "options") || word(n, "setting") || word(n, "settings"))
+			return "config";
+		if (word(n, "album") || word(n, "cg") || word(n, "cgmode")
+			|| word(n, "scene") || word(n, "scenemode") || word(n, "kaiso")
+			|| word(n, "gallery") || word(n, "omake") || word(n, "replay")
+			|| word(n, "recollection"))
+			return "gallery";
+		if (word(n, "history") || word(n, "backlog") || word(n, "log"))
+			return "backlog";
+		return "";
+	}
+
+	function dialogOpen()
+	{
+		return dialogs > 0;
+	}
+
+	function location()
+	{
+		if (dialogs > 0)
+			return "dialog";
+		if (kag.historyShowing)
+			return "backlog";
+		var l = screenOf(storage());
+		if (l != "")
+			return l;
+		if (titleLinks() != void)
+			return "title";
+		return "play";
+	}
+
+	// ---- the title menu --------------------------------------------------
+	//
+	// KAG3 titles are links like the story's choices: [link target=*restore]
+	// over the words the player sees. The console shows its own four tiles
+	// there, so a link is matched by the words in it, and by its target only
+	// where the menu is made of pictures.
+
+	// The words KAG3 title menus are made of, as character codes ($c is
+	// the character with code c, so this file stays ASCII). The console has
+	// tiles for the first four kinds; the others only tell a title menu from
+	// any other menu of links.
+	var newWords = [
+		$0x958b + $0x59cb,                     // kai-shi "start"
+		$0x5f00 + $0x59cb,                     // kai-shi "start", simplified
+		$0x306f + $0x3058 + $0x3081,           // hajime
+		$0x521d + $0x3081,                     // hajime, kanji
+		$0x30cb + $0x30e5 + $0x30fc,           // "new" in katakana
+		$0x5e8f + $0x5e55,                     // xu-mu, "prologue"
+		$0x5e8f + $0x7ae0,                     // xu-zhang, "prologue"
+		$0x65b0,                               // xin "new"
+		"start", "new", "begin", "first", "game start"];
+	var contWords = [
+		$0x7e7c + $0x7e8c,                     // ji-xu "continue"
+		$0x7ee7 + $0x7eed,                     // ji-xu "continue", simplified
+		$0x3064 + $0x3065 + $0x304d,           // tsuzuki
+		$0x7d9a + $0x304d,                     // tsuzuki, kanji and kana
+		$0x7d9a,                               // tsuzuku
+		"continue"];
+	var loadWords = [
+		$0x8aad + $0x307f + $0x8fbc,           // yomikomi
+		$0x8aad + $0x8fbc,                     // yomikomi
+		$0x8aad + $0x53d6,                     // yomitori
+		$0x30ed + $0x30fc + $0x30c9,           // "load" in katakana
+		$0x8f09 + $0x5165,                     // zai-ru "load"
+		$0x8bfb + $0x53d6,                     // du-qu "load", simplified
+		$0x8b80 + $0x53d6,                     // du-qu "load", traditional
+		$0x8bfb + $0x6863,                     // du-dang "load a save"
+		$0x8b80 + $0x6a94,                     // du-dang "load a save"
+		"load"];
+	var cfgWords = [
+		$0x8a2d + $0x5b9a,                     // she-ding "settings"
+		$0x8a2d + $0x7f6e,                     // she-zhi "settings"
+		$0x8bbe + $0x7f6e,                     // she-zhi "settings", simplified
+		$0x8bbe + $0x5b9a,                     // she-ding "settings", simplified
+		$0x9009 + $0x9879,                     // xuan-xiang "options"
+		$0x9078 + $0x9805,                     // xuan-xiang "options", traditional
+		$0x305b + $0x3063 + $0x3066 + $0x3044, // settei
+		"config", "option", "setting"];
+
+	function wordIn(text, words)
+	{
+		var t = "" + text;
+		var low = t.toLowerCase();
+		for (var i = 0; i < words.count; i++)
+		{
+			var w = words[i];
+			if (low.indexOf(w) >= 0)
+				return true;
+		}
+		return false;
+	}
+
+	function bitOfLink(label, target)
+	{
+		if (label != "")
+		{
+			if (wordIn(label, contWords)) return 512;
+			if (wordIn(label, newWords)) return 1024;
+			if (wordIn(label, loadWords)) return 128;
+			if (wordIn(label, cfgWords)) return 32;
+			return 0;
+		}
+		var t = ("" + target).toLowerCase();
+		if (t.indexOf("continue") >= 0 || t.indexOf("resume") >= 0) return 512;
+		if (t.indexOf("start") >= 0 || t.indexOf("new") >= 0
+			|| t.indexOf("begin") >= 0 || t.indexOf("first") >= 0
+			|| t.indexOf("game") >= 0) return 1024;
+		if (t.indexOf("load") >= 0 || t.indexOf("restore") >= 0) return 128;
+		if (t.indexOf("config") >= 0 || t.indexOf("option") >= 0
+			|| t.indexOf("setting") >= 0) return 32;
+		return 0;
+	}
+
+	function linkLabel(m, i)
+	{
+		if (m === labelsLayer && i < labels.count && labels[i] !== void)
+			return trim(labels[i]);
+		return "";
+	}
+
+	// The layer of a title screen, or void. A title's links are the words of
+	// a menu the console has tiles for, and at least two of them are: one
+	// word alone is a choice in the story that happens to read like one.
+	function titleLinks()
+	{
+		var m = kag.current;
+		if (m === void || typeof m.numLinks == "undefined" || m.numLinks <= 0)
+			return void;
+		var n = 0;
+		for (var i = 0; i < m.numLinks; i++)
+			if (bitOfLink(linkLabel(m, i), m.links[i].target) != 0)
+				n++;
+		return n >= 2 ? m : void;
+	}
+
+	// The link of the menu on screen that the tile `bit` stands for, or -1.
+	// Called on a title screen, where one word is enough to name a tile.
+	function titleBit(bit)
+	{
+		var m = kag.current;
+		if (m === void || typeof m.numLinks == "undefined")
+			return -1;
+		for (var i = 0; i < m.numLinks; i++)
+			if (bitOfLink(linkLabel(m, i), m.links[i].target) == bit)
+				return i;
+		return -1;
+	}
+
+	// ---- choices and buttons ---------------------------------------------
+
+	// The links of the current message layer, while they are a choice the
+	// player is being asked to make.
+	function linkList()
+	{
+		var m = kag.current;
+		if (m === void || !isvalid(m) || typeof m.numLinks == "undefined" || m.numLinks <= 0)
+			return void;
+		if (kag.historyShowing || !kag.inStable)
+			return void;
+		return m;
+	}
+
+	// Links the game made for its own screens carry no text (thumbnails, page
+	// numbers): what the game drew in them is what tells a choice from those.
+	function selection()
+	{
+		if (dialogs > 0 || location() != "play")
+			return void;
+		var m = linkList();
+		if (m === void)
+		{
+			lastLinkSig = "";
+			return void;
+		}
+		var sig = "" + m.numLinks;
+		var labs = [], any = false;
+		for (var i = 0; i < m.numLinks; i++)
+		{
+			var ln = m.links[i];
+			var label = linkLabel(m, i);
+			if (label == "" && ln.object !== void && typeof ln.object == "Object")
+			{
+				// a graphical link of the KAG3 samples keeps its caption
+				try { label = "" + ln.object.caption; } catch(e) {}
+				if (label == "")
+					try { label = "" + ln.object.name; } catch(e) {}
+				label = trim(label);
+			}
+			labs.add(label);
+			if (label != "")
+				any = true;
+			sig += "|" + ln.storage + ln.target + label;
+		}
+		if (!any)
+		{
+			// a menu of pictures: the console shows the places to tap, and
+			// the picture itself is on the screen above
+			lastLinkSig = "";
+			return void;
+		}
+		var out = [];
+		for (var i = 0; i < m.numLinks; i++)
+		{
+			if (labs[i] == "")
+				continue;
+			var enabled = 1;
+			try
+			{
+				var o = m.links[i].object;
+				if (o !== void && !o.enabled)
+					enabled = 0;
+			}
+			catch(e) {}
+			out.add([i, labs[i], "", enabled, 0]);
+		}
+		if (out.count == 0)
+		{
+			lastLinkSig = "";
+			return void;
+		}
+		if (sig != lastLinkSig)
+		{
+			lastLinkSig = sig;
+			selNum++;
+		}
+		return [selNum, out];
+	}
+
+	// The system button plugin of the KAG3 samples (systembutton.ks), which
+	// many games ship: its click handlers are what the game's own buttons do.
+	function sysButtons()
+	{
+		var o = void;
+		try { o = global.systembutton_object; } catch(e) {}
+		if (o === void || o.onSaveButtonClick === void)
+			return void;
+		return o;
+	}
+
+	function buttons()
+	{
+		if (dialogs > 0)
+			return 0;
+		if (kag.historyShowing)
+			return 0;
+		if (location() == "title")
+		{
+			var t = 0;
+			if (titleBit(32) >= 0) t |= 32;
+			if (titleBit(128) >= 0) t |= 128;
+			if (titleBit(512) >= 0) t |= 512;
+			if (titleBit(1024) >= 0) t |= 1024;
+			return t;
+		}
+		// the game's own screens are mirrored on the console: they have
+		// their own buttons, drawn on the picture
+		if (location() != "play")
+			return 0;
+		var btn = 0;
+		// auto and skip have nothing to do while the game waits for a choice
+		if (linkList() === void)
+			btn |= 1 | 2;
+		if (kag.inStable && sysButtons() !== void)
+			btn |= 32 | 64 | 128;
+		if (kag.startAnchorEnabled)
+			btn |= 256;
+		return btn;
+	}
+
+	function exec(c)
+	{
+		var name = "" + c.cmd;
+		if (dialogs > 0)
+			return "dialog";
+		if (location() == "title")
+		{
+			if (name == "newgame") return pressTitle(1024);
+			if (name == "continue") return pressTitle(512);
+			if (name == "load") return pressTitle(128);
+			if (name == "config") return pressTitle(32);
+			return "menu";
+		}
+		// the game's own screens and its backlog are operated on the
+		// picture itself (the console mirrors it): nothing to do from here
+		if (kag.historyShowing || location() != "play")
+			return "menu";
+		if (name == "click")
+		{
+			if (linkList() !== void)
+				return "select";
+			kag.onPrimaryClick();
+			return "ok";
+		}
+		if (name == "auto")
+		{
+			if (kag.autoMode) kag.cancelAutoMode(); else kag.enterAutoMode();
+			return "ok";
+		}
+		if (name == "skip")
+		{
+			if (kag.skipMode) kag.cancelSkip(); else kag.skipToStop();
+			return "ok";
+		}
+		if (name == "choose")
+		{
+			var num = +c.sel;
+			if (num >= 0 && num != selNum)
+				return "stale";
+			var m = linkList();
+			if (m === void)
+				return kag.inStable ? "noselect" : "wait";
+			var idx = +c.arg;
+			if (idx < 0 || idx >= m.numLinks)
+				return "stale";
+			m.processLink(idx);
+			return "chosen";
+		}
+		// the rest open one of the game's own screens
+		if (name != "save" && name != "load" && name != "config" && name != "title")
+			return "unknown";
+		if (!kag.inStable)
+			return "wait";
+		if (name == "title")
+		{
+			// what the game's own "back to title?" asks before running
+			if (!kag.startAnchorEnabled)
+				return "disabled";
+			kag.goToStart();
+			return "totitle";
+		}
+		var o = sysButtons();
+		if (o === void)
+			return "unsupported";
+		if (name == "save") { o.onSaveButtonClick(); return "ok"; }
+		if (name == "load") { o.onLoadButtonClick(); return "ok"; }
+		o.onConfigButtonClick();
+		return "ok";
+	}
+
+	function pressTitle(bit)
+	{
+		var i = titleBit(bit);
+		if (i < 0)
+			return bit == 512 ? "nocontinue" : "disabled";
+		if (!kag.inStable)
+			return "wait";
+		var m = kag.current;
+		if (m === void || i >= m.numLinks)
+			return "stale";
+		m.processLink(i);
+		return "ok";
+	}
+
+	// ---- what the line being typed is ------------------------------------
+
+	function current()
+	{
+		if (!parts.count)
+			return void;
+		var p = lineOf(parts);
+		if (p === void)
+			return void;
+		var t = trim(p[1]);
+		if (t == "")
+			return void;
+		if (p[0] != "")
+			return [p[0], t];
+		return split(t);
+	}
+
+	// ---- textbox ---------------------------------------------------------
+	//
+	// A KAG3 message layer is frame and text in one. Layers that carry links
+	// are left alone: those are menus or choices the player may still want
+	// to see on the PC. The game's system button bar is the console's own
+	// buttons, so it goes with the box.
+
+	function tbTargets(withFrame)
+	{
+		var out = [];
+		for (var p = 0; p < 2; p++)
+		{
+			var page = p ? kag.back : kag.fore;
+			for (var i = 0; i < page.messages.count; i++)
+			{
+				var m = page.messages[i];
+				if (m === void || !isvalid(m))
+					continue;
+				if (typeof m.numLinks != "undefined" && m.numLinks > 0)
+					continue;
+				out.add(m);
+			}
+		}
+		var o = sysButtons();
+		if (o !== void)
+		{
+			for (var p = 0; p < 2; p++)
+			{
+				var a = void;
+				try { a = p ? o.backButtons : o.foreButtons; } catch(e) {}
+				if (a === void)
+					continue;
+				for (var i = 0; i < a.count; i++)
+					if (a[i] !== void && isvalid(a[i]))
+						out.add(a[i]);
+			}
+		}
+		return out;
+	}
+}
+
+global.kiripanel_adapters.add(%[
+	"id" => "kag3",
+	"detect" => function()
+	{
+		if (typeof global.kag == "undefined" || global.kag === void
+			|| typeof global.kag.historyLayer == "undefined"
+			|| typeof global.kag.historyLayer.store == "undefined"
+			|| typeof global.kag.onPrimaryClick == "undefined"
+			|| typeof global.kag.enterAutoMode == "undefined"
+			|| typeof global.kag.skipToStop == "undefined"
+			|| typeof global.kag.current == "undefined")
+			return 0;
+		return 10;
+	} incontextof global,
+	"create" => function(core) { return new KPAdapterKag3(core); }
+		incontextof global
+]);

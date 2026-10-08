@@ -1,0 +1,39 @@
+# ---- builds -------------------------------------------------------------
+plugin/native/out/
+plugin/native/gen/__pycache__/
+dist/3ds/
+dist/KiriPanel/
+dist/_build/
+console/moonlight-n3ds/build/
+console/moonlight-n3ds/*.3dsx
+console/moonlight-n3ds/*.cia
+console/moonlight-n3ds/*.elf
+console/moonlight-n3ds/*.smdh
+console/panel_preview/_panel_preview.png
+
+# ---- python -------------------------------------------------------------
+__pycache__/
+*.py[cod]
+
+# ---- tool leftovers -----------------------------------------------------
+.playwright-mcp/
+
+# ---- things that belong to the player, not the repository ----------------
+# the test games' paths on this machine (see dev/testgames.example.json)
+dev/testgames.json
+# development leftovers: game data copies, save data, probe and scout output
+dev/backup_saves/
+dev/koihazi/
+dev/probe/
+dev/scout/
+dev/testdata/
+dev/testsave/
+archive/
+# the game the plugin is installed into during development
+kiripanel/
+_hkstate.ksd
+_hkcmd.ksd
+_hkscout.ksd
+
+# release packages (built by pc/build.py --zip, attached to a release)
+dist/*.zip

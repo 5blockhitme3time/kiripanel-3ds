@@ -1,0 +1,15 @@
+# The hook is plain ASCII with no BOM and LF endings; the engine may read it
+# as Shift-JIS, UTF-8 or the system code page, and CRLF would show up in a
+# dialogue line. Never convert these.
+plugin/hook/*.tjs text eol=lf -text
+*.tjs text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+Makefile text eol=lf
+*.def text eol=crlf
+*.png binary
+*.ttf binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.tpm binary

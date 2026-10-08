@@ -1,0 +1,4 @@
+[submodule "console/moonlight-n3ds"]
+	path = console/moonlight-n3ds
+	url = https://github.com/5blockhitme3time/moonlight-N3DS.git
+	branch = kiripanel

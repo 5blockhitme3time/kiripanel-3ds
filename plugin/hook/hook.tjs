@@ -1,0 +1,68 @@
+/*
+	hook.tjs - entry point of the 3DS dialogue panel hook.
+
+	Installed as kiripanel/hook.tjs next to the exe (plugin/kiripanel/ in
+	version 0.2) with the rest of the hook. Loaded by the native plugin
+	once the KAG window exists - as version.dll next to the exe, or as
+	plugin/kiripanel.tpm, which some engines load by themselves - or by a
+	short AfterInit2.tjs next to the exe in games that run that file.
+	Whichever comes first wins; the others see global.hk_panel_bridge and
+	do nothing. The loader sets global.kiripanel_dir to this folder.
+
+	  core.tjs              files shared with relay.py, commands, textbox
+	  adapter_base.tjs      what an adapter provides
+	  adapter_*.tjs         one per game or family of games
+	  scout.tjs             report on an unknown game (the "scout" command)
+
+	A file that fails to load is logged and skipped; without the core the
+	hook simply does not start, and the game is unaffected either way.
+
+	Kept ASCII-only, like every file of the hook.
+*/
+
+if (typeof global.hk_panel_bridge == "undefined")
+{
+	global.kiripanel_dir = (typeof global.kiripanel_dir != "undefined")
+		? global.kiripanel_dir : System.exePath + "kiripanel/";
+	global.kiripanel_adapters = [];
+	global.kiripanel_load = function(name, required)
+	{
+		var s = global.kiripanel_dir + name;
+		try
+		{
+			if (!Storages.isExistentStorage(s))
+			{
+				if (required)
+					throw new Exception("missing " + s);
+				return false;
+			}
+			Scripts.execStorage(s);
+			return true;
+		}
+		catch(e)
+		{
+			var msg = "could not load " + name + ": " + e.message;
+			try
+			{
+				if (typeof global.KiriPanelNative != "undefined")
+					KiriPanelNative.log(msg);
+				else
+					Debug.message("kiripanel: " + msg);
+			}
+			catch(e2) {}
+			return false;
+		}
+	} incontextof global;
+
+	if (kiripanel_load("core.tjs", true) && kiripanel_load("adapter_base.tjs", true))
+	{
+		kiripanel_load("scout.tjs", false);
+		// Most specific first only for readability; detection scores decide.
+		kiripanel_load("adapter_koihazi.tjs", false);
+		kiripanel_load("adapter_kagex.tjs", false);
+		kiripanel_load("adapter_kag3.tjs", false);
+		global.hk_panel_bridge = new KPCore();
+		// development only: present while dev/probe.py runs the game
+		kiripanel_load("devprobe.tjs", false);
+	}
+}

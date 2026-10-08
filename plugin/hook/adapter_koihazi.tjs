@@ -1,0 +1,539 @@
+/*
+	adapter_koihazi.tjs - "Ren'ai, Hajimemashite" (asa project, KiriKiri Z + KAG3
+	with the developer's own select/bookmark/title systems).
+
+	Everything here READS the game's own state and ACTS through the game's own
+	entry points; nothing synthesises mouse or keyboard input, and nothing
+	re-implements game logic. The entry points were taken from the game's
+	scripts (scenario/Message/MS_Select.tjs, MS_LayCre.tjs, Bookmark/BM_Func.tjs,
+	Backlog/BLPlugin_Base.ks):
+
+	  finished lines   tf.BL_Data[i] = [text, name, ...]   (the game's backlog)
+	  line being typed tf.ADV_CurrentText / f.ADV_CurrentCharaName
+	  where we are     f.NowLocate  ('ADV_Playing', 'Title', 'Save', ...)
+	  choice on screen f.EV_ShowSelect / f.EV_ShowNumSelect, option buttons in
+	                   systembutton_object.SL_BaseImgLay
+	  choose option i  SL_BaseImgLay[i].onExecute(), i.e. exactly what a mouse
+	                   click does: -> BtPro -> TxSL_Process(i), which records
+	                   the route (f.EV_SelectRouteRecord), updates the
+	                   prev/next-choice links and ends the select properly.
+	  auto/skip/voice  the system button's own onExecute()
+	  quick save/load  BM.BookMark.BM_QuickBookMarkCre() / BM_Load(slot) - the
+	                   functions the game's QSave/QLoad dialogs call on "yes"
+	                   (the dialog itself would appear on the PC screen, where
+	                   the 3DS cannot answer it; the panel confirms instead)
+	  advance          kag.onPrimaryClick(), which is what the game's own
+	                   down-arrow shortcut calls
+*/
+
+class KPAdapterKoihazi extends KPAdapter
+{
+	// Backlog mirror state: the array we last read and its last entry.
+	var blArr = void;
+	var blLast = void;
+	var tbOrigSetup = void;    // the game's CF_TxWindowOpacitySetup
+	var tbWrapSetup = void;    // ours, to notice if the game replaces it
+
+	function KPAdapterKoihazi(core)
+	{
+		super.KPAdapter(core);
+		id = "koihazi";
+		// The text and name layers are never transparent in this game.
+		healTextLayers = true;
+	}
+
+	function detach()
+	{
+		if (tbWrapSetup !== void && global.CF_TxWindowOpacitySetup === tbWrapSetup)
+			global.CF_TxWindowOpacitySetup = tbOrigSetup;
+		tbWrapSetup = void;
+	}
+
+	// ---- helpers ---------------------------------------------------------
+
+	function dialogOpen()
+	{
+		if (typeof global.ImageDialogLayerPlugin_obj == "undefined")
+			return false;
+		return global.ImageDialogLayerPlugin_obj.Show_Value ? true : false;
+	}
+
+	function sysButton(name)
+	{
+		if (typeof global.systembutton_object == "undefined")
+			return void;
+		var o = global.systembutton_object;
+		var i = o.ForeButtonsName[name];
+		if (i === void)
+			return void;
+		var b = o.ForeButtons[i];
+		if (b === void || !isvalid(b))
+			return void;
+		return b;
+	}
+
+	function buttonUsable(name)
+	{
+		var b = sysButton(name);
+		return b !== void && b.OrgEnabled && b.enabled;
+	}
+
+	// f.ADV_LastVoice is an array of [buf, file], but a few paths reset it to
+	// '' instead of [], and a string has no .count.
+	function hasVoice()
+	{
+		var v = kag.flags.ADV_LastVoice;
+		return typeof v == "Object" && v !== void && v.count > 0;
+	}
+
+	// ---- where we are ----------------------------------------------------
+
+	function rawLocation()
+	{
+		return "" + kag.flags.NowLocate;
+	}
+
+	function location()
+	{
+		var l = rawLocation();
+		if (l == "ADV_Playing") return "play";
+		if (l == "Title") return "title";
+		if (l == "Save") return "save";
+		if (l == "Load") return "load";
+		if (l == "Config") return "config";
+		if (l == "BackLog") return "backlog";
+		if (l == "Event" || l == "Voice" || l == "Extra") return "gallery";
+		if (l == "ADV_Ending") return "ending";
+		return "menu";
+	}
+
+	function playing()
+	{
+		return kag.flags.NowLocate == "ADV_Playing" && !dialogOpen();
+	}
+
+	// ---- dialogue mirror -------------------------------------------------
+
+	function tick()
+	{
+		var d = kag.tflags.BL_Data;
+		if (d === void || typeof d.count == "undefined")
+			return;
+		var n = d.count;
+		var from;
+		if (d !== blArr)
+		{
+			// a fresh array: new game, load, or BL_Clear
+			core.newSection();
+			from = 0;
+		}
+		else if (blLast === void)
+			from = 0;
+		else
+		{
+			from = -1;
+			for (var i = n - 1; i >= 0 && i >= n - 260; i--)
+			{
+				if (d[i] === blLast)
+				{
+					from = i + 1;
+					break;
+				}
+			}
+			if (from < 0)
+			{
+				// the last line we sent is gone: a backlog jump cut the log
+				// back, and what follows replays from that point
+				core.newSection();
+				from = n;
+			}
+		}
+		blArr = d;
+		for (var i = from; i < n; i++)
+		{
+			var e = d[i];
+			if (e === void)
+				continue;
+			core.addLine(e[1], e[0]);
+		}
+		if (n > 0)
+			blLast = d[n - 1];
+	}
+
+	function current()
+	{
+		var f = kag.flags;
+		if (f.ADV_CurrentTextEnabled && kag.tflags.ADV_CurrentText != "")
+			return [f.ADV_CurrentCharaName, kag.tflags.ADV_CurrentText];
+		return void;
+	}
+
+	// ---- choices ---------------------------------------------------------
+
+	function selection()
+	{
+		var f = kag.flags;
+		if (!f.EV_ShowSelect)
+			return void;
+		var num = +f.EV_ShowNumSelect;
+		return [num, selectOptions(num)];
+	}
+
+	// [index, label, image, enabled, read] per option button on screen.
+	function selectOptions(num)
+	{
+		var out = [];
+		if (typeof global.systembutton_object == "undefined")
+			return out;
+		var o = global.systembutton_object;
+		var imgs = o.SL_BaseImgLay;
+		var labels = [];
+		try { labels = kag.tflags.EV_SelectListInfo[num][2]; } catch(e) {}
+		// Text choices get a caption layer per button; image choices (the
+		// route cards) do not, and their caption is baked into the image.
+		var textMode = o.SL_BaseTxLay.count > 0;
+		var rec = void;
+		try { rec = kag.sflags.EV_SelectRecord[num][1]; } catch(e) {}
+		for (var i = 0; i < imgs.count; i++)
+		{
+			var b = imgs[i];
+			if (b === void || !isvalid(b))
+				continue;
+			var label = (i < labels.count) ? ("" + labels[i]) : "";
+			var img = textMode ? "" : ("" + b.StorageName);
+			var read = (rec !== void && rec[i]) ? 1 : 0;
+			out.add([i, label, img, b.enabled ? 1 : 0, read]);
+		}
+		return out;
+	}
+
+	// ---- buttons ---------------------------------------------------------
+
+	function buttons()
+	{
+		var f = kag.flags;
+		var loc = "" + f.NowLocate;
+		var playing = this.playing();
+		var scene = kag.tflags.SCENE_Enabled ? 1 : 0;
+		var btn = 0;
+		if (playing && !f.EV_ShowSelect)
+		{
+			if (buttonUsable("auto")) btn |= 1;
+			if (buttonUsable("skip")) btn |= 2;
+		}
+		if (playing && hasVoice())
+			btn |= 4;
+		if (playing && !scene)
+		{
+			btn |= 8;
+			if (+kag.sflags.BM_QuickNewSlot > 10)
+				btn |= 16;
+		}
+		// The game's own screens and the title menu.
+		if (playing)
+		{
+			btn |= 32;
+			if (!scene)
+				btn |= 64 | 128;
+			if (kag.startAnchorEnabled)
+				btn |= 256;
+		}
+		else if (loc == "Title" && titleReady())
+		{
+			if (titleUsable(4)) btn |= 32;
+			if (titleUsable(2)) btn |= 128;
+			if (titleUsable(0) && hasSuspend()) btn |= 512;
+			if (titleUsable(1)) btn |= 1024;
+		}
+		return btn;
+	}
+
+	// ---- title screen ----------------------------------------------------
+	//
+	// The title menu's buttons are CC_Buttons in TI.Title.Buttons with Func
+	// "MENU..." and Value = their index (TI_GoMENU: 0 continue, 1 start,
+	// 2 load, 3 events, 4 settings, 5 extras, 6 quit). Pressing one through
+	// onExecute is what a mouse click on it does.
+
+	function titleReady()
+	{
+		if (kag.flags.NowLocate != "Title" || dialogOpen())
+			return false;
+		if (typeof global.TI == "undefined")
+			return false;
+		var t = global.TI.Title;
+		// disabled (MouseDecisionManage) while a menu runs over the title
+		return t !== void && isvalid(t) && t.visible && t.enabled;
+	}
+
+	function titleButton(idx)
+	{
+		var bs = global.TI.Title.Buttons;
+		for (var i = 0; i < bs.count; i++)
+		{
+			var b = bs[i];
+			if (b !== void && isvalid(b) && ("" + b.Func).indexOf("MENU") == 0
+				&& +b.Value == idx)
+				return b;
+		}
+		return void;
+	}
+
+	function titleUsable(idx)
+	{
+		if (!titleReady())
+			return false;
+		var b = titleButton(idx);
+		// still fading in (OpaShow) counts as not yet usable
+		return b !== void && b.visible && b.enabled && b.opacity == 255;
+	}
+
+	function pressTitle(idx)
+	{
+		if (!titleReady())
+			return "wait";
+		var b = titleButton(idx);
+		if (b === void)
+			return "unknown";
+		if (!b.visible || !b.enabled || b.opacity < 255)
+			return "wait";
+		b.onExecute(0, 0, mbLeft, 0);
+		return "ok";
+	}
+
+	function hasSuspend()
+	{
+		return kag.getBookMarkDate(2) != "";
+	}
+
+	// ---- commands --------------------------------------------------------
+
+	// Commands that open one of the game's own screens or leave the story.
+	// Returns void for commands that are not of this kind.
+	function execScreen(name)
+	{
+		var f = kag.flags;
+		if (name != "config" && name != "save" && name != "load"
+			&& name != "title" && name != "continue" && name != "newgame")
+			return void;
+		if (dialogOpen())
+			return "dialog";
+		if (f.NowLocate == "Title")
+		{
+			if (name == "continue")
+				return hasSuspend() ? pressTitle(0) : "nocontinue";
+			if (name == "newgame")
+				return pressTitle(1);
+			if (name == "load")
+				return pressTitle(2);
+			if (name == "config")
+				return pressTitle(4);
+			return "menu";
+		}
+		if (f.NowLocate != "ADV_Playing")
+			return "menu";
+		if (name == "title")
+		{
+			if (!kag.startAnchorEnabled)
+				return "disabled";
+			if (!kag.inStable)
+				return "wait";
+			// what the game runs when its own "back to title?" is answered
+			// yes: suspend save (so Continue returns here), then the title
+			kag.goToStart();
+			return "totitle";
+		}
+		if (name == "continue" || name == "newgame")
+			return "menu";
+		if (kag.tflags.SCENE_Enabled && name != "config")
+			return "scene";
+		var b = sysButton(name);
+		if (b === void)
+			return "unknown";
+		// these go dark while text is being drawn; the press waits for it
+		if (!b.OrgEnabled || !b.enabled)
+			return "wait";
+		b.onExecute(0, 0, mbLeft, 0);
+		return "ok";
+	}
+
+	function exec(c)
+	{
+		var name = "" + c.cmd;
+		var f = kag.flags;
+		var screen = execScreen(name);
+		if (screen !== void)
+			return screen;
+		if (f.NowLocate != "ADV_Playing")
+			return "menu";
+		if (dialogOpen())
+			return "dialog";
+
+		if (name == "click")
+		{
+			if (f.EV_ShowSelect)
+				return "select";
+			kag.onPrimaryClick();
+			return "ok";
+		}
+		if (name == "auto" || name == "skip")
+		{
+			if (f.EV_ShowSelect)
+				return "select";
+			var b = sysButton(name);
+			if (b === void)
+				return "unknown";
+			// Disabled while the other mode runs, exactly as on screen.
+			if (!b.OrgEnabled || !b.enabled)
+				return "disabled";
+			b.onExecute(0, 0, mbLeft, 0);
+			return "ok";
+		}
+		if (name == "voice")
+		{
+			if (!hasVoice())
+				return "novoice";
+			var b = sysButton("voice");
+			if (b === void)
+				return "unknown";
+			if (!b.OrgEnabled || !b.enabled)
+				return "wait";
+			b.onExecute(0, 0, mbLeft, 0);
+			return "ok";
+		}
+		if (name == "qsave")
+		{
+			if (kag.tflags.SCENE_Enabled)
+				return "scene";
+			if (!kag.inStable)
+				return "wait";
+			BM.BookMark.BM_QuickBookMarkCre();
+			return "saved";
+		}
+		if (name == "qload")
+		{
+			if (kag.tflags.SCENE_Enabled)
+				return "scene";
+			if (!(+kag.sflags.BM_QuickNewSlot > 10))
+				return "empty";
+			if (!kag.inStable)
+				return "wait";
+			BM.BookMark.BM_Load(+kag.sflags.BM_QuickNewSlot);
+			return "loaded";
+		}
+		if (name == "choose")
+		{
+			if (!f.EV_ShowSelect)
+				return "noselect";
+			var num = +c.sel;
+			// The panel says which prompt it was looking at, so a tap that
+			// arrives after the game moved on cannot pick the wrong thing.
+			if (num >= 0 && +f.EV_ShowNumSelect != num)
+				return "stale";
+			if (!kag.inStable)
+				return "wait";
+			var imgs = global.systembutton_object.SL_BaseImgLay;
+			var idx = +c.arg;
+			if (imgs.count == 0)
+				return "wait";
+			if (idx < 0 || idx >= imgs.count)
+				return "stale";
+			var b = imgs[idx];
+			if (b === void || !isvalid(b))
+				return "stale";
+			if (!b.enabled || !b.visible)
+				return "disabled";
+			b.onExecute(0, 0, mbLeft, 0);
+			return "chosen";
+		}
+		return "unknown";
+	}
+
+	// ---- textbox ---------------------------------------------------------
+	//
+	// The text layer is message0, the name plate is the message layer named
+	// by tf.MS_NameLayNum, the frame is the plain layer tf.MS_FrameLayNum,
+	// and the window's buttons belong to systembutton_object. The game sets
+	// the frame's opacity on every line (CF_TxWindowOpacitySetup, which is
+	// also its "transparent window over CGs" setting); that is wrapped so the
+	// frame stays hidden in between.
+
+	function tbTargets(withFrame)
+	{
+		var out = [];
+		var tf = kag.tflags;
+		var names = ["message0", "" + tf.MS_NameLayNum];
+		for (var p = 0; p < 2; p++)
+		{
+			var page = p ? kag.back : kag.fore;
+			for (var n = 0; n < names.count; n++)
+			{
+				if (names[n].indexOf("message") != 0)
+					continue;
+				var i = +names[n].substring(7);
+				if (i >= 0 && i < page.messages.count)
+					out.add(page.messages[i]);
+			}
+			if (withFrame && tf.MS_FrameLayNum !== void)
+			{
+				var fi = +tf.MS_FrameLayNum;
+				if (fi > 0 && fi < page.layers.count)
+					out.add(page.layers[fi]);
+			}
+		}
+		if (withFrame && typeof global.systembutton_object != "undefined")
+		{
+			var o = global.systembutton_object;
+			for (var i = 0; i < o.ForeButtons.count; i++)
+				out.add(o.ForeButtons[i]);
+			for (var i = 0; i < o.BackButtons.count; i++)
+				out.add(o.BackButtons[i]);
+		}
+		return out;
+	}
+
+	function tbInstall()
+	{
+		if (typeof global.CF_TxWindowOpacitySetup == "undefined"
+			|| global.CF_TxWindowOpacitySetup === tbWrapSetup)
+			return;
+		tbOrigSetup = global.CF_TxWindowOpacitySetup;
+		// The original is kept in a global, not on this adapter, so the
+		// wrapper still works if the adapter is replaced without detach().
+		global.kiripanel_koihazi_setup = tbOrigSetup;
+		tbWrapSetup = function()
+		{
+			var r = (global.kiripanel_koihazi_setup incontextof global)(...);
+			var b = global.hk_panel_bridge;
+			if (b.tbActive && b.adapter.id == "koihazi")
+				b.tbApply();
+			return r;
+		} incontextof global;
+		global.CF_TxWindowOpacitySetup = tbWrapSetup;
+	}
+
+	function tbRefresh()
+	{
+		// the frame's value depends on settings and on whether a CG is
+		// showing; let the game work it out as it does on every line
+		try { global.CF_TxWindowOpacitySetup(); } catch(e) {}
+	}
+}
+
+global.kiripanel_adapters.add(%[
+	"id" => "koihazi",
+	// The developer's own select, title and bookmark systems; each is
+	// created by first.ks a moment after the hook starts.
+	"detect" => function()
+	{
+		if (typeof global.systembutton_object == "undefined"
+			|| typeof global.TI == "undefined"
+			|| typeof global.BM == "undefined"
+			|| typeof global.CF_TxWindowOpacitySetup == "undefined"
+			|| typeof global.systembutton_object.SL_BaseImgLay == "undefined")
+			return 0;
+		return 100;
+	} incontextof global,
+	"create" => function(core) { return new KPAdapterKoihazi(core); }
+		incontextof global
+]);

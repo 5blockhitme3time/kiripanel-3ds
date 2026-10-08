@@ -1,0 +1,290 @@
+/*
+	scout.tjs - a report on a game the hook does not know yet, for writing
+	its adapter. Run by the "scout" command (relay.py --scout, or scout.py),
+	which works with or without an adapter. Writes _hkscout.ksd to the save
+	folder; scout.py turns it into a readable text file.
+
+	It only READS: names and types of globals, the KAG window's state, the
+	message layers, the layer tree, KAG plugins, flag names (with short
+	values), and the plugins the game loaded. Member names come from the
+	tpm (KiriPanelNative.members), which lists them without running any
+	property getter; without the tpm that part is left out.
+
+	Kept ASCII-only, like every file of the hook.
+*/
+
+class KPScout
+{
+	var native = typeof global.KiriPanelNative != "undefined";
+
+	function classOf(o)
+	{
+		try
+		{
+			if (typeof global.Scripts.getClassNames != "undefined")
+			{
+				var c = Scripts.getClassNames(o);
+				if (c !== void)
+				{
+					var s = "";
+					for (var i = 0; i < c.count; i++)
+						s += (i ? "<" : "") + c[i];
+					return s;
+				}
+			}
+		}
+		catch(e) {}
+		return "";
+	}
+
+	// short, single-line rendering of a value
+	function brief(v)
+	{
+		var t = typeof v;
+		if (t == "String")
+		{
+			var s = v.replace(/[\r\n\t]/g, " ");
+			return s.length > 60 ? s.substring(0, 60) + "..." : s;
+		}
+		if (t == "Integer" || t == "Real")
+			return "" + v;
+		if (t == "Object")
+		{
+			if (v === void)
+				return "void";
+			try
+			{
+				if (!isvalid(v))
+					return "{invalidated}";
+				if (v instanceof "Array")
+					return "[" + v.count + "]";
+				return "{" + classOf(v) + "}";
+			}
+			catch(e) { return "{?}"; }
+		}
+		return t;
+	}
+
+	function names(o)
+	{
+		if (!native || o === void)
+			return [];
+		try { return KiriPanelNative.members(o); } catch(e) { return []; }
+	}
+
+	function walk(l, depth, out)
+	{
+		if (out.count >= 400 || depth > 6)
+			return;
+		var row = [depth, "", "", 0, 0, 0, 0, 0];
+		try
+		{
+			row[1] = "" + l.name;
+			row[2] = classOf(l);
+			row[3] = l.visible ? 1 : 0;
+			row[4] = l.opacity;
+			row[5] = l.width;
+			row[6] = l.height;
+			row[7] = l.children.count;
+		}
+		catch(e) {}
+		out.add(row);
+		try
+		{
+			for (var i = 0; i < l.children.count; i++)
+				walk(l.children[i], depth + 1, out);
+		}
+		catch(e) {}
+	}
+
+	function run(core)
+	{
+	var R = %[];
+	R.version = System.versionString;
+	R.exe = System.exeName;
+	try { R.title = "" + global.kag.caption; } catch(e) { R.title = ""; }
+	R.hook = core.version;
+	R.adapter = core.adapter.id;
+	R.native = native ? KiriPanelNative.version : "";
+	R.modules = native ? KiriPanelNative.modules() : [];
+
+	// globals: [name, type or class, brief value]; and the suspicious ones
+	var interesting = /select|choice|sel_|backlog|history|log|title|menu|button|save|load|bookmark|config|scene|kaiso|recollect|replay|dialog|window|message|msg|text|name|voice|auto|skip|system/i;
+	var G = [];
+	var S = [];
+	var gn = names(global);
+	gn.sort();
+	for (var i = 0; i < gn.count; i++)
+	{
+		var n = gn[i];
+		var v;
+		try { v = global[n]; } catch(e) { continue; }
+		var row = [n, typeof v, brief(v)];
+		G.add(row);
+		var live = false;
+		try { live = typeof v == "Object" && v !== void && isvalid(v); } catch(e) {}
+		if (live && interesting.test(n))
+		{
+			var mem = names(v);
+			mem.sort();
+			var cut = [];
+			for (var j = 0; j < mem.count && j < 300; j++)
+				cut.add(mem[j]);
+			S.add([n, classOf(v), cut]);
+		}
+	}
+	R.globals = G;
+	R.suspects = S;
+
+	if (typeof global.kag != "undefined" && global.kag !== void && isvalid(global.kag))
+	{
+		var k = global.kag;
+		var K = %[];
+		K.classes = classOf(k);
+		var want = ["onPrimaryClick", "enterAutoMode", "cancelAutoMode", "skipToStop",
+			"cancelSkip", "autoMode", "skipMode", "saveBookMark", "loadBookMark",
+			"saveBookMarkToFile", "loadBookMarkFromFile", "goToStart", "goToStartWithAsk",
+			"internalStoreFlags", "internalRestoreFlags", "usingExtraConductor",
+			"inStable", "historyLayer", "historyShowing", "current", "startAnchorEnabled",
+			"numBookMarks", "callExtraConductor", "conductor", "extraConductor",
+			"messageLayerHiding", "setMessageLayerHiddenState", "getBookMarkDate",
+			"quickSave", "quickLoad", "qsave", "qload", "world", "env", "selectProcess",
+			"currentLabel", "conductor.curStorage", "readOnlyMode", "bookMarkNames"];
+		var W = [];
+		for (var i = 0; i < want.count; i++)
+		{
+			var v = void, t = "undefined";
+			try
+			{
+				var parts = want[i].split(".");
+				var o = k;
+				for (var j = 0; j < parts.count && o !== void; j++)
+				{
+					if (typeof o[parts[j]] == "undefined") { o = void; t = "undefined"; break; }
+					o = o[parts[j]];
+					t = typeof o;
+				}
+				v = o;
+			}
+			catch(e) { t = "error " + e.message; }
+			W.add([want[i], t, t == "undefined" ? "" : brief(v)]);
+		}
+		K.members = W;
+		var km = names(k);
+		km.sort();
+		K.allMembers = km;
+
+		// KAG plugins (kag.addPlugin)
+		var P = [];
+		try
+		{
+			for (var i = 0; i < k.plugins.count; i++)
+				P.add(classOf(k.plugins[i]));
+		}
+		catch(e) {}
+		K.plugins = P;
+
+		// message layers, both pages
+		var M = [];
+		for (var p = 0; p < 2; p++)
+		{
+			var page;
+			try { page = p ? k.back : k.fore; } catch(e) { continue; }
+			for (var i = 0; i < page.messages.count; i++)
+			{
+				var m = page.messages[i];
+				var row = %[];
+				row.page = p ? "back" : "fore";
+				row.index = i;
+				try
+				{
+					row.name = m.name;
+					row.cls = classOf(m);
+					row.visible = m.visible;
+					row.opacity = m.opacity;
+					row.rect = [m.left, m.top, m.width, m.height];
+					row.isCurrent = (m === k.current);
+					try { row.numLinks = m.numLinks; } catch(e) {}
+					try { row.frameGraphic = m.frameGraphic; } catch(e) {}
+				}
+				catch(e) { row.error = e.message; }
+				M.add(row);
+			}
+		}
+		K.messages = M;
+		try
+		{
+			if (k.current !== void)
+			{
+				var cm = names(k.current);
+				cm.sort();
+				K.currentMembers = cm;
+			}
+		}
+		catch(e) {}
+
+		// history layer
+		try
+		{
+			var h = k.historyLayer;
+			if (h !== void)
+			{
+				var H = %[];
+				H.cls = classOf(h);
+				var hm = names(h);
+				hm.sort();
+				H.members = hm;
+				var probe = ["data", "dataPages", "dataPos", "dataLines", "maxLines",
+					"currentLine", "everypage", "storeState", "logs", "lines"];
+				var HV = [];
+				for (var i = 0; i < probe.count; i++)
+					if (typeof h[probe[i]] != "undefined")
+						HV.add([probe[i], brief(h[probe[i]])]);
+				H.values = HV;
+				K.history = H;
+			}
+		}
+		catch(e) { K.historyError = e.message; }
+
+		// layer tree under the fore base
+		var T = [];
+		try { walk(k.fore.base, 0, T); } catch(e) {}
+		K.layers = T;
+
+		// flags: name, brief value
+		var F = %[];
+		var fl = ["flags", "tflags", "sflags"];
+		for (var i = 0; i < fl.count; i++)
+		{
+			var d;
+			try { d = k[fl[i]]; } catch(e) { continue; }
+			var ks = names(d);
+			ks.sort();
+			var rows = [];
+			for (var j = 0; j < ks.count && j < 600; j++)
+			{
+				try { rows.add([ks[j], brief(d[ks[j]])]); } catch(e) {}
+			}
+			F[fl[i]] = rows;
+		}
+		K.flags = F;
+		R.kag = K;
+	}
+
+	var base = System.dataPath;
+	if (base.charAt(base.length - 1) != "/")
+		base += "/";
+	(Dictionary.saveStruct incontextof R)(base + "_hkscout.ksd", "");
+	return "scouted";
+	}
+}
+
+global.kiripanel_scout = function(core)
+{
+	var s = new KPScout();
+	var r;
+	try { r = s.run(core); }
+	catch(e) { invalidate s; throw e; }
+	invalidate s;
+	return r;
+} incontextof global;

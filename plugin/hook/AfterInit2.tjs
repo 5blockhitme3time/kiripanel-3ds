@@ -1,0 +1,16 @@
+// kiripanel: fallback loader for games whose own scripts load AfterInit2.tjs.
+// When version.dll or kiripanel.tpm is present they install the hook and
+// this does nothing. Delete this file to uninstall the fallback.
+if (typeof global.kiripanel_boot == "undefined" && typeof global.hk_panel_bridge == "undefined")
+{
+	var kiripanel_dirs = [System.exePath + "kiripanel/", System.exePath + "plugin/kiripanel/"];
+	for (var i = 0; i < kiripanel_dirs.count; i++)
+	{
+		if (Storages.isExistentStorage(kiripanel_dirs[i] + "hook.tjs"))
+		{
+			global.kiripanel_dir = kiripanel_dirs[i];
+			Scripts.execStorage(kiripanel_dirs[i] + "hook.tjs");
+			break;
+		}
+	}
+}

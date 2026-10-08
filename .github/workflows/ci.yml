@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  plugin-and-pc:
+    name: in-game plugin + PC side
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the plugin (x86 + x64)
+        run: plugin\native\build.bat
+
+      - name: Check the proxy export tables
+        run: |
+          python plugin\native\proxytest.py plugin\native\out\x64\version.dll
+          python plugin\native\proxytest.py plugin\native\out\x64\mpr.dll
+          python plugin\native\proxytest.py plugin\native\out\x86\version.dll
+          python plugin\native\proxytest.py plugin\native\out\x86\mpr.dll
+
+      - name: Unit tests
+        run: python -m unittest discover -s pc/tests -v
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-native
+          path: plugin/native/out/*/*.dll
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-native-tpm
+          path: plugin/native/out/*/kiripanel.tpm
+          if-no-files-found: error
+
+  panel:
+    name: panel (native harness)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FreeType
+        run: sudo apt-get update && sudo apt-get install -y libfreetype6
+
+      - name: Build and run the panel tests
+        working-directory: console/panel_preview
+        run: |
+          g++ -std=gnu++17 -O1 -g -Wall -Wextra -Wno-unused-parameter \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -I../moonlight-n3ds/src/panel -I../moonlight-n3ds/src/relay \
+            -I/usr/include/freetype2 \
+            main.cpp png.cpp host_assets.cpp \
+            ../moonlight-n3ds/src/panel/panel_ui.cpp \
+            ../moonlight-n3ds/src/panel/panel_draw.cpp \
+            ../moonlight-n3ds/src/panel/panel_font.cpp \
+            ../moonlight-n3ds/src/relay/relay_protocol.cpp \
+            -lfreetype -o panel_test
+          ./panel_test ../moonlight-n3ds/3ds/data/hkfont.ttf --test
+
+  console:
+    name: 3DS app
+    runs-on: ubuntu-latest
+    # the toolchain image builds expat, openssl and ffmpeg first; that is slow
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build the toolchain image
+        run: docker build --network=host -t moonlight-n3ds console/moonlight-n3ds
+
+      - name: Build the console app
+        run: docker run --rm -v "$PWD/console/moonlight-n3ds:/moonlight-N3DS" -w /moonlight-N3DS moonlight-n3ds:latest make -j"$(nproc)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 3ds
+          path: |
+            console/moonlight-n3ds/moonlight.3dsx
+            console/moonlight-n3ds/moonlight.cia
+          if-no-files-found: error

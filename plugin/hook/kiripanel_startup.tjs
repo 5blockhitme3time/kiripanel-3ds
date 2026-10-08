@@ -1,0 +1,30 @@
+// kiripanel: startup script for engines that do not load plugin\*.tpm by
+// themselves. Run the game with  -startup=<this file>  (KiriKiri Z only):
+// it links the tpm, then runs the game's own startup.tjs as usual.
+// Nothing in the game folder is changed.
+var kiripanel_mark = function(step, msg = "")
+{
+	if (typeof global.kiripanel_startup_probe == "undefined")
+		return;
+	var d = %[];
+	d.step = step;
+	d.msg = msg;
+	(Dictionary.saveStruct incontextof d)(System.dataPath + "_kpstart_" + step + ".ksd", "");
+} incontextof global;
+kiripanel_mark("1-ran");
+try
+{
+	var kp = System.exePath + "plugin/kiripanel.tpm";
+	var have = Storages.isExistentStorage(kp);
+	kiripanel_mark("1b-found", "" + have + " " + kp);
+	if (typeof global.KiriPanelNative == "undefined" && have)
+		Plugins.link(kp);
+	kiripanel_mark("2-linked", typeof global.KiriPanelNative);
+}
+catch(e)
+{
+	kiripanel_mark("2-linkfailed", e.message);
+	Debug.message("kiripanel: could not link the tpm: " + e.message);
+}
+kiripanel_mark("3-game");
+Scripts.execStorage("startup.tjs");
