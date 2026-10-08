@@ -44,9 +44,11 @@ g++ $CXXFLAGS -fsanitize=address,undefined -fno-omit-frame-pointer \
 echo "=== tests"
 # A full system font stands in for the one a player puts on the SD card; the
 # test only needs any font with the coverage the subset lacks. Noto CJK comes
-# first: it is the one CI installs for this, and the one with real Hangul.
+# first: it is the one CI installs for this (the package name varies between
+# NotoSansCJK-Regular.ttc and the variable NotoSansCJK-VF.ttc), and it is the
+# one with real Hangul.
 EXTRA=""
-for f in /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc \
+for f in /usr/share/fonts/opentype/noto/NotoSansCJK*.tt[cf] \
          /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
          /mnt/c/Windows/Fonts/malgun.ttf; do
     [ -f "$f" ] && EXTRA="$f" && break
