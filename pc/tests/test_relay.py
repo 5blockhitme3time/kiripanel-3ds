@@ -6,6 +6,7 @@ import unittest
 
 import sys
 
+# pc/ on the path, so the tests run from the repo root or from pc/
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from kiripanel import relay as R  # noqa: E402
 

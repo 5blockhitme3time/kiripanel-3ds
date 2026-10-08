@@ -6,10 +6,29 @@ import sys
 import tempfile
 import unittest
 
+# pc/ on the path, so the tests run from the repo root or from pc/
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from kiripanel import games, install  # noqa: E402
 
-PE32 = os.path.join(os.environ["SystemRoot"], "SysWOW64", "notepad.exe")
+
+def find_pe():
+    """A real PE file from this machine to stand in for a game's exe. A
+    Windows Server install (CI) has no notepad.exe in SysWOW64, hence the
+    list; anything 32-bit is fine, the tests only read its headers."""
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    for p in (os.path.join(root, "SysWOW64", "notepad.exe"),
+              os.path.join(root, "System32", "notepad.exe"),
+              os.path.join(root, "System32", "rundll32.exe"),
+              os.path.join(root, "SysWOW64", "rundll32.exe"),
+              sys.executable):
+        if p and os.path.isfile(p):
+            with open(p, "rb") as f:
+                if f.read(2) == b"MZ":
+                    return p
+    raise unittest.SkipTest("no PE file on this machine to use as a game exe")
+
+
+PE32 = find_pe()
 QUIET = lambda m: None   # noqa: E731
 
 

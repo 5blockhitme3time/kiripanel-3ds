@@ -1,5 +1,10 @@
 # KiriPanel
 
+[![CI](https://github.com/5blockhitme3time/kiripanel-3ds/actions/workflows/ci.yml/badge.svg)](https://github.com/5blockhitme3time/kiripanel-3ds/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/5blockhitme3time/kiripanel-3ds)](https://github.com/5blockhitme3time/kiripanel-3ds/releases)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-New%203DS%20%2B%20Windows-lightgrey.svg)](#玩家快速开始)
+
 把吉里吉里（KiriKiri）galgame 搬到 New 3DS 上玩：**上屏是 Moonlight 串流的游戏画面，
 下屏原生显示台词**——说话人、历史、选项都在下面，点一下就能前进、选择、自动、快进、
 快存快读、打开存读档和设置、回到标题。电脑上游戏自己的对话框可以自动隐藏，
@@ -143,6 +148,10 @@ wsl bash console/panel_preview/build.sh    # 96 项测试（ASan）+ docs/images
 
 测试绝不碰玩家真实存档：`-datapath` 指向副本或空目录；唯一一个不认 `-datapath` 的启动器
 会先把 `savedata` 按字节备份、结束后原样恢复。
+
+CI（GitHub Actions）每次提交会跑：Windows 上编插件 + PC 单元测试、Linux 上编面板
+（ASan）跑 96 项测试、Docker 里编 3DS 端。打 `v*` tag 会自动发 Release，附件里是
+`KiriPanel-<版本>.zip`（玩家下载包）和 3DS 端的 `.3dsx` / `.cia`。
 
 ## 写一个新适配器
 
