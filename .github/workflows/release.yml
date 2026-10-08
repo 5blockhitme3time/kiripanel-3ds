@@ -9,36 +9,6 @@ permissions:
   contents: write
 
 jobs:
-  windows:
-    name: plugin + KiriPanel.exe
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Build the plugin (x86 + x64)
-        run: plugin\native\build.bat
-
-      - name: Unit tests
-        run: python -m unittest discover -s pc/tests
-
-      - name: Install PyInstaller
-        run: python -m pip install --disable-pip-version-check pyinstaller
-
-      - name: Pack the player's download
-        run: |
-          mkdir dist\3ds
-          python pc\build.py --zip
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-windows
-          path: dist/KiriPanel-*.zip
-          if-no-files-found: error
-
   console:
     name: 3DS app
     runs-on: ubuntu-latest
@@ -60,6 +30,41 @@ jobs:
           path: |
             console/moonlight-n3ds/moonlight.3dsx
             console/moonlight-n3ds/moonlight.cia
+          if-no-files-found: error
+
+  windows:
+    name: plugin + KiriPanel.exe
+    needs: console
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the plugin (x86 + x64)
+        run: plugin\native\build.bat
+
+      - name: Unit tests
+        run: python -m unittest discover -s pc/tests
+
+      - name: Install PyInstaller
+        run: python -m pip install --disable-pip-version-check pyinstaller
+
+      # build.py picks up dist\3ds, so the download carries the console app too
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-3ds
+          path: dist/3ds
+
+      - name: Pack the player's download
+        run: python pc\build.py --zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/KiriPanel-*.zip
           if-no-files-found: error
 
   publish:

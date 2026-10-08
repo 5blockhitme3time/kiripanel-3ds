@@ -1,7 +1,10 @@
 """Checks a proxy build: exports match the system DLL (names, ordinals,
 forwarders), and calls through the stubs give the same answers as the real
 functions.
-    python proxytest.py PATH_TO_version.dll|mpr.dll   (same bitness as this Python)
+    python proxytest.py PATH_TO_version.dll|mpr.dll
+
+The export tables are compared for either build; the calls need this Python
+to be the same bitness, and are skipped (with a line saying so) otherwise.
 
 Reads the export tables with the standard library only, so this runs on a
 machine with nothing installed."""
@@ -15,6 +18,17 @@ proxy = os.path.abspath(sys.argv[1])
 name = os.path.basename(proxy).lower()
 system = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
                       "System32" if sys.maxsize > 2**32 else "SysWOW64", name)
+
+
+def machine_arch(path):
+    """'x86', 'x64' or None, from a PE header."""
+    with open(path, "rb") as f:
+        data = f.read()
+    pe = struct.unpack_from("<I", data, 0x3c)[0]
+    if data[pe:pe + 4] != b"PE\0\0":
+        return None
+    return {0x14c: "x86", 0x8664: "x64"}.get(
+        struct.unpack_from("<H", data, pe + 4)[0])
 
 
 def exports(path):
@@ -65,8 +79,18 @@ def exports(path):
 
 
 a, b = exports(proxy), exports(system)
-print("exports match:", [(o, n, bool(f)) for o, n, f in a] == [(o, n, bool(f)) for o, n, f in b],
-      "(%d)" % len(a))
+match = [(o, n, bool(f)) for o, n, f in a] == [(o, n, bool(f)) for o, n, f in b]
+print("exports match:", match, "(%d)" % len(a))
+
+# Loading the DLL only works in a process of the same bitness, so a mismatch
+# (checking out\x86 from a 64-bit Python) stops after the export tables - the
+# part that needs no loading - instead of failing on WinError 193.
+want = "x64" if sys.maxsize > 2**32 else "x86"
+if machine_arch(proxy) != want:
+    print("%s is a %s build and this Python is %s, so the stubs were only "
+          "compared as export tables, not called: the calls need the same "
+          "bitness" % (os.path.basename(proxy), machine_arch(proxy), want))
+    sys.exit(0 if match else 1)
 
 k = ctypes.WinDLL("kernel32", use_last_error=True)
 k.LoadLibraryW.restype = W.HMODULE
