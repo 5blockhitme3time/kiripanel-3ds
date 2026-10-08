@@ -19,14 +19,8 @@ jobs:
       - name: Build the plugin (x86 + x64)
         run: plugin\native\build.bat
 
-      - name: Check the proxy export tables
-        run: |
-          python plugin\native\proxytest.py plugin\native\out\x64\version.dll
-          python plugin\native\proxytest.py plugin\native\out\x64\mpr.dll
-          python plugin\native\proxytest.py plugin\native\out\x86\version.dll
-          python plugin\native\proxytest.py plugin\native\out\x86\mpr.dll
-
       - name: Debug layout
+        continue-on-error: true
         shell: python
         run: |
           import os, sys
@@ -40,6 +34,13 @@ jobs:
           print("kiripanel dir", os.path.isdir(os.path.join(ins, "kiripanel")))
           print("listing pc", sorted(os.listdir(os.path.join(root, "pc"))))
           print("sys.path", sys.path[:5])
+
+      - name: Check the proxy export tables
+        run: |
+          python plugin\native\proxytest.py plugin\native\out\x64\version.dll
+          python plugin\native\proxytest.py plugin\native\out\x64\mpr.dll
+          python plugin\native\proxytest.py plugin\native\out\x86\version.dll
+          python plugin\native\proxytest.py plugin\native\out\x86\mpr.dll
 
       - name: Unit tests
         run: python -m unittest discover -s pc/tests -v
@@ -60,6 +61,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install FreeType
         run: sudo apt-get update && sudo apt-get install -y libfreetype6

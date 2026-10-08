@@ -1,24 +1,67 @@
 """Checks a proxy build: exports match the system DLL (names, ordinals,
 forwarders), and calls through the stubs give the same answers as the real
 functions.
-    python proxytest.py PATH_TO_version.dll|mpr.dll   (same bitness as this Python)"""
+    python proxytest.py PATH_TO_version.dll|mpr.dll   (same bitness as this Python)
+
+Reads the export tables with the standard library only, so this runs on a
+machine with nothing installed."""
 import ctypes
 import ctypes.wintypes as W
 import os
+import struct
 import sys
-
-import pefile
 
 proxy = os.path.abspath(sys.argv[1])
 name = os.path.basename(proxy).lower()
-system = os.path.join(os.environ["SystemRoot"],
+system = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
                       "System32" if sys.maxsize > 2**32 else "SysWOW64", name)
 
 
-def exports(p):
-    pe = pefile.PE(p)
-    return sorted((s.ordinal, s.name.decode(), s.forwarder)
-                  for s in pe.DIRECTORY_ENTRY_EXPORT.symbols)
+def exports(path):
+    """[(ordinal, name, forwarder or None)] from a PE's export directory."""
+    with open(path, "rb") as f:
+        data = f.read()
+    pe = struct.unpack_from("<I", data, 0x3c)[0]
+    if data[pe:pe + 4] != b"PE\0\0":
+        raise SystemExit("%s is not a PE file" % path)
+    nsec, = struct.unpack_from("<H", data, pe + 6)
+    opt_size, = struct.unpack_from("<H", data, pe + 20)
+    opt = pe + 24
+    dirs = opt + (112 if struct.unpack_from("<H", data, opt)[0] == 0x20b else 96)
+    exp_rva, exp_size = struct.unpack_from("<II", data, dirs)
+    sections = []
+    for i in range(nsec):
+        s = opt + opt_size + i * 40
+        va, vsize, raw, rawsize = struct.unpack_from("<IIII", data, s + 12)
+        sections.append((va, max(vsize, rawsize), raw, rawsize))
+
+    def at(rva, n):
+        for va, vsize, raw, rawsize in sections:
+            if va <= rva < va + vsize:
+                off = raw + (rva - va)
+                return data[off:off + n] if n else b""
+        raise SystemExit("rva %#x is not in any section" % rva)
+
+    # IMAGE_EXPORT_DIRECTORY
+    exp = at(exp_rva, 40)
+    base, nfunc, nname = struct.unpack_from("<III", exp, 16)
+    funcs_rva, names_rva, ords_rva = struct.unpack_from("<III", exp, 28)
+    funcs = struct.unpack_from("<%dI" % nfunc, at(funcs_rva, 4 * nfunc)) if nfunc else ()
+    name_rvas = struct.unpack_from("<%dI" % nname, at(names_rva, 4 * nname)) if nname else ()
+    ords = struct.unpack_from("<%dH" % nname, at(ords_rva, 2 * nname)) if nname else ()
+    by_index = {}
+    for i, nr in enumerate(name_rvas):
+        by_index[ords[i]] = at(nr, 256).split(b"\0")[0].decode("ascii", "replace")
+    out = []
+    for i, rva in enumerate(funcs):
+        if not rva:
+            continue
+        forwarder = None
+        if exp_rva <= rva < exp_rva + exp_size:
+            # a forwarder is "DLL.Function" written where the code would be
+            forwarder = at(rva, 256).split(b"\0")[0].decode("ascii", "replace")
+        out.append((base + i, by_index.get(i, ""), forwarder))
+    return sorted(out)
 
 
 a, b = exports(proxy), exports(system)
