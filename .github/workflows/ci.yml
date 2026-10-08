@@ -51,7 +51,9 @@ jobs:
           submodules: recursive
 
       - name: Install FreeType
-        run: sudo apt-get update && sudo apt-get install -y libfreetype-dev pkg-config
+        # fonts-noto-cjk is the font with the coverage the embedded subset
+        # lacks, for the fallback test
+        run: sudo apt-get update && sudo apt-get install -y libfreetype-dev pkg-config fonts-noto-cjk
 
       - name: Build and run the panel tests
         run: bash console/panel_preview/build.sh
