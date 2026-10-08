@@ -75,3 +75,21 @@ python dev/regress.py --list                     # 真游戏回归的场景
   涉及 3DS 端的改动请注明是**真机**验证还是只在 PC 上的面板测试里验证过。
 - 新增对某款游戏的支持时，**不要**把游戏脚本、图片、存档或大段原文台词提进仓库；
   适配器里只放调用游戏自身函数所需的代码。
+
+## 发布一个版本
+
+版本号只有一处:`pc/kiripanel/app.py` 里的 `VERSION`（打包出的 zip 名、窗口右下角、
+`KiriPanel.exe` 里的资源都用它）。发版就是打一个 `v*` tag:
+
+```bash
+git tag -a v1.0.0 -m "KiriPanel 1.0.0"
+git push origin v1.0.0
+```
+
+`.github/workflows/release.yml` 会先在 Docker 里编 3DS 端，然后在 Windows 上编插件、
+跑单元测试、把 3DS 产物放进 `dist/3ds/` 再用 `pc\build.py --zip` 打包，最后把
+`KiriPanel-<版本>.zip` 和 `moonlight.3dsx` / `moonlight.cia` 挂到 Release 上。
+
+已经发过的 tag 不能复用:改了东西要发同一版本，就删掉 tag 重新打
+（`git tag -d v1.0.0 && git push origin :refs/tags/v1.0.0`）。Release 说明写在
+`.github/release-notes-<版本>.md`，发完后用 `gh release edit v1.0.0 --notes-file …` 更新。
