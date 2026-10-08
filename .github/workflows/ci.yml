@@ -26,6 +26,21 @@ jobs:
           python plugin\native\proxytest.py plugin\native\out\x86\version.dll
           python plugin\native\proxytest.py plugin\native\out\x86\mpr.dll
 
+      - name: Debug layout
+        shell: python
+        run: |
+          import os, sys
+          root = os.getcwd()
+          d = os.path.join(root, "pc", "tests", "test_compat.py")
+          print("cwd", root)
+          print("file exists", os.path.isfile(d))
+          print("dirname", os.path.dirname(os.path.abspath(d)))
+          ins = os.path.join(os.path.dirname(os.path.abspath(d)), "..")
+          print("insert", os.path.normpath(ins), os.path.isdir(ins))
+          print("kiripanel dir", os.path.isdir(os.path.join(ins, "kiripanel")))
+          print("listing pc", sorted(os.listdir(os.path.join(root, "pc"))))
+          print("sys.path", sys.path[:5])
+
       - name: Unit tests
         run: python -m unittest discover -s pc/tests -v
 
